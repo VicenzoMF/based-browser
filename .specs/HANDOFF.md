@@ -26,6 +26,9 @@
   - **ADR-0005** (arquitetura) + **ADR-0006** (validação/fechamento). **AD-009** + **L-006** no STATE.
     Deps novas: `ash 0.38` + `gl 0.14` (wgpu via `slint::wgpu_28::wgpu`); pin `servo =0.2.0`/toolchain/
     lints raiz intocados. Commits: T0 (renderer), T1 (benchmark), T2–T4 (zero-copy).
+  - **Waker real** (T6): `ServoWaker` substitui o no-op; loop spina adaptativo (60 Hz ativo / ~10 Hz
+    ocioso, ramp por `wake()`/input). 62 fps animado sem regressão. CPU ocioso em release já era baixo
+    (~5%) → ganho absoluto modesto; lever maior (intervalo de polling adaptativo) fica deferred.
 
 ## In Progress
 
@@ -35,7 +38,9 @@
 
 1. Multi-aba, histórico de sessão, favoritos (dentro dos limites de compat do Servo).
 2. (barato, paralelo) **Sync por fence/semáforo** no lugar do `glFinish` (ganho extra sobre os 3,1 ms).
-3. (barato, paralelo) **Waker real** p/ reduzir CPU ocioso do `Timer` 60 Hz.
+3. (futuro) **Intervalo de polling adaptativo** (reschedule do `Timer` quando ocioso) — o waker real (T6)
+   já está feito, mas o CPU ocioso em release já era baixo (~5%); reduzi-lo de verdade exige baixar a
+   frequência do polling do event-loop, com risco de ramp de animação.
 
 ## Blockers
 
