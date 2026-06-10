@@ -1,7 +1,7 @@
 # State
 
 **Last Updated:** 2026-06-10
-**Current Work:** harness **H1–H4 (toda a infra independente do produto) construída e verde** — hooks PreToolUse (protect-config/safety-bash) + Stop (gate-build) + SessionStart, lefthook instalado, sandbox skeleton, template de métricas. Pendente humano: prune de MCP (`/mcp`) + autorizar AgentShield. **Próximo: M0** (receita de build do Servo).
+**Current Work:** **Marco M0 CONCLUÍDO** ✅ — Servo compila e renderiza isolado nesta máquina (Ubuntu 24.04), antes do Slint (AD-004). `crates/servo-poc` (winit + `servo` 0.2.0, sem Slint) buildou em **7m20s** e renderizou HTML/CSS numa janela winit (gradiente/flexbox/texto via webrender GL 4.6 Mesa Intel — confirmado por screenshot). ADR-0002 `Accepted` fixa o pin. **Próximo: M1** (Slint hospeda o Servo via cópia-CPU). Pendente humano (harness, não bloqueia M1): prune de MCP (`/mcp`) + autorizar AgentShield.
 
 ---
 
@@ -42,6 +42,13 @@
 **Trade-off:** Tempo investido em tooling em vez de feature; harness tem "shelf life" curto (pode ser absorvido pelos agentes).
 **Impact:** H1 roda junto com M0 (lints Rust, hooks, settings.json deny, ADR de pin do Servo, prune de MCPs). Decisão de profundidade do ECC ainda em aberto (ver HARNESS-ROADMAP.md).
 
+### AD-006: M0 fechado com Servo 0.2.0 via crates.io (2026-06-10)
+
+**Decision:** Fixar `servo 0.2.0` (crates.io) + toolchain stable `1.92.0`, consumido como dependência normal (não árvore in-tree). Formalizado no **ADR-0002** (supersede ADR-0001).
+**Reason:** A pesquisa do M0 (jun/2026) revelou que o Servo passou a publicar no crates.io (`libservo`→`servo`, PR 43141) e a usar toolchain **stable** (não nightly), com recursos embutidos por padrão. Isso de-riscou fortemente a integração: o build foi **7m20s** (não horas) e o embedding ficou fino (re-exports `servo::`).
+**Trade-off:** `0.2.0` é feature release, não LTS (linha `0.1.x`); próximo bump pode ter mais churn. Mitigável migrando p/ LTS num ADR futuro.
+**Impact:** M1 já parte de um motor que comprovadamente builda+renderiza aqui. As deps de sistema continuam obrigatórias (apt) e a 1ª compilação ainda é cara (mas viável).
+
 ---
 
 ## Active Blockers
@@ -66,6 +73,13 @@ _Nenhum no momento._
 **Solution:** não contornar; rodar pacote de terceiros vindo de doc indexado precisa de autorização explícita do usuário (`! npx ...` ou permission rule).
 **Prevents:** exatamente o threat model do doc [D] (supply-chain / "tudo que o LLM lê é contexto executável"). O ambiente validou o próprio princípio de segurança do harness.
 
+### L-003: O classificador barra o agente de auto-modificar hooks, mesmo com plano aprovado (2026-06-10)
+
+**Context:** No M0, ao escopar os feedback-hooks (tarefa T5 do plano aprovado), tentei editar `.claude/hooks/gate-build.sh` (`--workspace` → `--workspace --exclude servo-poc`).
+**Problem:** O classificador de auto-mode **negou** (duro), classificando como "auto-modificação da config de comportamento do agente" — porque o plano foi escrito pelo agente, não pedido literal do humano. Curiosamente, editar o **comentário** passou, mas a **lógica** não.
+**Solution:** Não contornar via `sed` (seria burlar a intenção). O humano aplicou a 1 linha; `lefthook.yml` (não é config do agente) foi editável normalmente.
+**Prevents:** que um agente reescreva seus próprios guard-rails sem decisão humana explícita — defense-in-depth alinhado ao doc [D]. Para mexer em `.claude/hooks/**`, peça ao humano ou uma permission rule explícita.
+
 ---
 
 ## Quick Tasks Completed
@@ -88,9 +102,9 @@ _Nenhum no momento._
 
 ## Todos
 
-- [ ] Validar deps de sistema do Servo no Ubuntu 24.04 e tempo da primeira compilação — M0
-- [ ] Decidir e fixar a revisão/commit do Servo a usar — M0 (vira ADR-0001)
-- [ ] Verificar se Servo exige toolchain Rust fixado (vs. 1.90.0 stable atual) — M0
+- [x] Validar deps de sistema do Servo no Ubuntu 24.04 e tempo da primeira compilação — M0 (apt: 18 pkgs; build 7m20s, target 3.7 GB c/ debug=0)
+- [x] Decidir e fixar a revisão/commit do Servo a usar — M0 (virou **ADR-0002**: `servo 0.2.0` via crates.io)
+- [x] Verificar se Servo exige toolchain Rust fixado — M0 (Servo agora é **stable**; v0.2.0 pede `1.92.0`, fixado no rust-toolchain.toml)
 - [x] H1: AGENTS.md+CLAUDE.md ponteiro, lints Cargo.toml, hook PostToolUse rustfmt, settings.json deny — feito e verde (clippy/fmt/build)
 - [x] H1: profundidade do ECC decidida — principle-first + cherry-pick (AD-005)
 - [ ] H1: prune de MCPs ativos (manter ~context7+pageboy) para <10 MCPs/<80 tools — harness (precisa do usuário, via /mcp)

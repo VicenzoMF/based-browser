@@ -1,28 +1,28 @@
 # Roadmap
 
-**Current Milestone:** M0 — Fundação & PoC do Motor
-**Status:** Planning
+**Current Milestone:** M1 — MVP: Slint hospeda o Servo
+**Status:** Planning (M0 ✅ concluído em 2026-06-10)
 
 ---
 
-## M0 — Fundação & PoC do Motor
+## M0 — Fundação & PoC do Motor ✅ CONCLUÍDO (2026-06-10)
 
 **Goal:** Provar que o Servo compila e renderiza na máquina-alvo, isolado, antes de envolver o Slint. De-risking do maior ponto de incerteza do projeto.
-**Target:** Exemplo mínimo `libservo + winit` rodando localmente e abrindo uma página.
+**Target:** Exemplo mínimo `servo + winit` rodando localmente e abrindo uma página. **Atingido** — `crates/servo-poc`.
 
 ### Features
 
-**Setup do projeto & toolchain** - PLANNED
+**Setup do projeto & toolchain** - DONE
 
 - Repositório git + estrutura Cargo
-- Validar/instalar deps de sistema do Servo no Ubuntu 24.04
-- Definir e fixar a revisão do Servo a usar (`rust-toolchain.toml` se necessário)
+- Deps de sistema do Servo no Ubuntu 24.04 validadas/instaladas (18 pkgs apt)
+- Revisão fixada: `servo 0.2.0` (crates.io) + toolchain `1.92.0` (ADR-0002)
 
-**PoC do motor isolado** - PLANNED
+**PoC do motor isolado** - DONE
 
-- Compilar `libservo`
-- Rodar o exemplo mínimo `winit + WebView` do Servo
-- Abrir uma URL e confirmar render numa janela winit pura (sem Slint ainda)
+- `servo 0.2.0` compilado (build 7m20s)
+- Exemplo mínimo `winit + WebView` portado (`crates/servo-poc`, embedding fino)
+- URL aberta e **render confirmado** numa janela winit pura (sem Slint) — screenshot
 
 ---
 
