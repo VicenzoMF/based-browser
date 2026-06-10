@@ -793,8 +793,10 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "basedbrowser"
 version = "0.0.0"
 dependencies = [
+ "ash",
  "dpi",
  "euclid",
+ "gl",
  "image",
  "raw-window-handle",
  "rustls",
@@ -2781,6 +2783,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
+name = "gl"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
+dependencies = [
+ "gl_generator",
+]
+
+[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2916,7 +2927,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -9422,7 +9433,7 @@ version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1804632b66a35ca2b1d277eb0a138e10f46cb365b9a6d297e876b69ef79de43"
 dependencies = [
- "skrifa 0.37.0",
+ "skrifa 0.40.0",
  "yazi",
  "zeno",
 ]

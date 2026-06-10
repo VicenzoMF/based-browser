@@ -35,3 +35,11 @@ url = "2.5"
 euclid = "0.22"
 image = "0.25"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+
+# M3 (ADR-0005): interop GPU zero-copy (ponte Vulkan↔GL↔wgpu em `gpu_bridge.rs`).
+# `ash` = bindings Vulkan p/ criar a imagem com memória externa e exportar o FD; a versão CASA com a
+# que o wgpu-hal da wgpu-28 usa (0.38.x), pra os tipos `vk::*` unificarem com `as_hal`. `gl` = bindings
+# GL crus carregados via `get_proc_address` do surfman p/ as entry-points `*EXT` de memória externa
+# (glImportMemoryFdEXT/glCreateMemoryObjectsEXT/glTexStorageMem2DEXT) que o glow 0.17 não expõe.
+ash = "0.38"
+gl = "0.14"

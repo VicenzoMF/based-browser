@@ -20,6 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+mod gpu_bridge;
 mod input;
 
 use euclid::Scale;
@@ -28,6 +29,7 @@ use servo::{
     DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext, RenderingContext, Servo,
     ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WindowRenderingContext,
 };
+use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
 use url::Url;
 
@@ -289,13 +291,31 @@ impl WebViewDelegate for Embedder {
     }
 }
 
-/// Estado vivo do motor. `_parent` é mantido vivo porque o `OffscreenRenderingContext` empresta o
-/// contexto GL dele.
+/// Handles wgpu/Vulkan do Slint, capturados via `set_rendering_notifier` (`GraphicsAPI::WGPU28`).
+/// Clonáveis (Arc internamente); usados pela ponte GPU (`gpu_bridge`) p/ extrair os handles Vulkan
+/// crus e embrulhar a imagem compartilhada como `wgpu::Texture`.
+#[derive(Clone)]
+struct WgpuCtx {
+    instance: wgpu::Instance,
+    device: wgpu::Device,
+}
+
+/// Estado vivo do motor. O `parent` (`WindowRenderingContext`) é mantido vivo porque o
+/// `OffscreenRenderingContext` empresta o contexto GL dele — e, no M3, é dele que vem o
+/// `get_proc_address` do surfman p/ carregar as entry-points GL `*EXT`.
 struct Runtime {
     webview: WebView,
     servo: Servo,
     context: Rc<OffscreenRenderingContext>,
-    _parent: Rc<WindowRenderingContext>,
+    parent: Rc<WindowRenderingContext>,
+    /// Device wgpu do Slint (compartilhado com o `set_rendering_notifier`); `None` até ser capturado.
+    wgpu: Rc<RefCell<Option<WgpuCtx>>>,
+    /// Textura GPU compartilhada (M3). `None` até ser criada sob demanda (quando `wgpu` estiver pronto).
+    bridge: RefCell<Option<gpu_bridge::SharedFrameTexture>>,
+    /// Entry-points GL `*EXT` já carregadas (uma vez).
+    gl_loaded: Cell<bool>,
+    /// Interop GPU desabilitado p/ esta sessão (fallback permanente p/ cópia-CPU).
+    gpu_disabled: Cell<bool>,
 }
 
 /// Cria o `Servo` + `WebView` renderizando num `OffscreenRenderingContext` (FBO de GL de hardware)
@@ -305,6 +325,7 @@ fn init_runtime(
     window: &slint::Window,
     sink: Rc<Embedder>,
     web_size: dpi::PhysicalSize<u32>,
+    wgpu: Rc<RefCell<Option<WgpuCtx>>>,
 ) -> Result<Runtime, String> {
     let provider = window.window_handle();
     let display_handle = provider
@@ -344,7 +365,11 @@ fn init_runtime(
         webview,
         servo,
         context,
-        _parent: parent,
+        parent,
+        wgpu,
+        bridge: RefCell::new(None),
+        gl_loaded: Cell::new(false),
+        gpu_disabled: Cell::new(false),
     })
 }
 
@@ -425,39 +450,134 @@ fn placeholder_frame(width: u32, height: u32) -> Image {
     Image::from_rgba8(buffer)
 }
 
-/// Sequência canônica de leitura (servo-paint/screenshot.rs): `paint()` renderiza no FBO offscreen
-/// (o compositor faz `make_current` + `prepare_for_rendering` internamente) -> `make_current` ->
-/// `read_to_image` lê o FBO. Copia para um `SharedPixelBuffer` e atualiza a `Image` da UI.
-/// Define `BASEDBROWSER_DUMP_FRAME=<path>` p/ salvar o frame em PNG (evidência/depuração).
+/// Bombeia um frame. `paint()` renderiza no FBO offscreen do Servo. Depois, **M3 (ADR-0005):** tenta
+/// o caminho GPU zero-copy (blit do FBO offscreen para a textura compartilhada, daí um `slint::Image`
+/// que a referencia); se o interop não estiver disponível, cai no fallback de **cópia-CPU** (M1/M2,
+/// via `read_to_image`). `BASEDBROWSER_DUMP_FRAME=<path>` salva o frame em PNG (evidência, uma vez).
 fn pump_frame(runtime: &Runtime, weak: &slint::Weak<MainWindow>, logged: &Cell<bool>) {
     runtime.webview.paint();
     if runtime.context.make_current().is_err() {
         return;
     }
+    let handled = !runtime.gpu_disabled.get() && pump_frame_gpu(runtime, weak);
+    if !handled {
+        pump_frame_cpu(runtime, weak);
+    }
+    // Evidência (opt-in por env): dump a cada frame sobrescrevendo — o arquivo final é um frame já
+    // renderizado (a 1ª rajada de frames de uma página pode estar em branco antes de pintar). Loga só
+    // uma vez. Fora do caminho quente normal (só roda quando `BASEDBROWSER_DUMP_FRAME` está setado).
+    if let Ok(path) = std::env::var("BASEDBROWSER_DUMP_FRAME") {
+        let first = !logged.replace(true);
+        dump_source(runtime, &path, first);
+        if let Some(bridge) = runtime.bridge.borrow().as_ref() {
+            bridge.dump_shared(&path, first);
+        }
+    }
+}
+
+/// Caminho GPU zero-copy (M3). Cria a ponte sob demanda assim que o device wgpu do Slint é capturado.
+/// Faz o blit do FBO offscreen do Servo para a textura compartilhada (flip + sync dentro de
+/// `blit_from`) e entrega um `slint::Image` que a referencia. Devolve `true` se entregou o frame;
+/// `false` p/ cair no fallback CPU. Falha ao criar a ponte desabilita o GPU para a sessão (loga uma vez).
+fn pump_frame_gpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) -> bool {
+    let size = runtime.context.size2d();
+    // (Re)cria a ponte se ainda não existe ou se o offscreen mudou de tamanho (resize). O contexto do
+    // Servo já está corrente (`pump_frame` chamou `make_current`), então é seguro mexer no GL aqui.
+    let needs_new = match runtime.bridge.borrow().as_ref() {
+        None => true,
+        Some(bridge) => bridge.size() != (size.width, size.height),
+    };
+    if needs_new {
+        // Precisa do device wgpu já capturado pelo `set_rendering_notifier`.
+        let captured = runtime.wgpu.borrow().clone();
+        let Some(ctx) = captured else {
+            return false; // ainda não capturado; usa CPU neste frame
+        };
+        if !runtime.gl_loaded.replace(true) {
+            // Carrega as entry-points GL `*EXT` via o `get_proc_address` do surfman do Servo.
+            let (device, context) = runtime.parent.surfman_details();
+            gpu_bridge::load_gl_with(|symbol| device.get_proc_address(&context, symbol));
+        }
+        // Libera a ponte antiga (tamanho velho) antes de criar a nova.
+        if let Some(old) = runtime.bridge.borrow_mut().take() {
+            old.destroy();
+        }
+        match gpu_bridge::SharedFrameTexture::new(
+            &ctx.device,
+            &ctx.instance,
+            size.width,
+            size.height,
+        ) {
+            Ok(bridge) => {
+                eprintln!(
+                    "[m3] textura GPU compartilhada criada ({}x{}) — zero-copy ativo",
+                    size.width, size.height
+                );
+                *runtime.bridge.borrow_mut() = Some(bridge);
+            }
+            Err(e) => {
+                eprintln!("[m3] interop GPU indisponível, fallback p/ cópia-CPU: {e}");
+                runtime.gpu_disabled.set(true);
+                return false;
+            }
+        }
+    }
+
+    let bridge_ref = runtime.bridge.borrow();
+    let Some(bridge) = bridge_ref.as_ref() else {
+        return false;
+    };
+    // Origem do blit = FBO do offscreen do Servo. `prepare_for_rendering` o liga; lemos o binding.
+    runtime.context.prepare_for_rendering();
+    let src_fbo = gpu_bridge::bound_framebuffer();
+    bridge.blit_from(src_fbo);
+    match bridge.slint_image() {
+        Ok(image) => {
+            if let Some(app) = weak.upgrade() {
+                app.set_frame(image);
+            }
+            true
+        }
+        Err(e) => {
+            eprintln!("[m3] falha ao derivar slint::Image da textura GPU: {e}");
+            false
+        }
+    }
+}
+
+/// Fallback de cópia-CPU (M1/M2): `read_to_image` (readback GL) → `SharedPixelBuffer` →
+/// `Image::from_rgba8`. Usado até o device wgpu ser capturado, ou se o interop GPU falhar.
+fn pump_frame_cpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) {
     let rect = DeviceIntRect::from_size(runtime.context.size2d().to_i32());
     let Some(frame) = runtime.context.read_to_image(rect) else {
         return;
     };
-
-    if let Ok(path) = std::env::var("BASEDBROWSER_DUMP_FRAME") {
-        match frame.save(&path) {
-            Ok(()) => {
-                if !logged.replace(true) {
-                    eprintln!(
-                        "[m1] frame do Servo salvo em {path} ({}x{})",
-                        frame.width(),
-                        frame.height()
-                    );
-                }
-            }
-            Err(e) => eprintln!("[m1] falha ao salvar dump do frame: {e}"),
-        }
-    }
-
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(frame.width(), frame.height());
     buffer.make_mut_bytes().copy_from_slice(frame.as_raw());
     if let Some(app) = weak.upgrade() {
         app.set_frame(Image::from_rgba8(buffer));
+    }
+}
+
+/// Salva o frame da FONTE (FBO offscreen do Servo, via `read_to_image`) em `path`, sobrescrevendo.
+/// Evidência/depuração — comparável ao dump da textura GPU compartilhada (`.gpu.png`). `log` controla
+/// se emite o eprintln (uma vez). Fora do caminho quente (só quando `BASEDBROWSER_DUMP_FRAME` setado).
+fn dump_source(runtime: &Runtime, path: &str, log: bool) {
+    let rect = DeviceIntRect::from_size(runtime.context.size2d().to_i32());
+    let Some(frame) = runtime.context.read_to_image(rect) else {
+        return;
+    };
+    match frame.save(path) {
+        Ok(()) => {
+            if log {
+                eprintln!(
+                    "[m3] frame da fonte salvo em {path} ({}x{})",
+                    frame.width(),
+                    frame.height()
+                );
+            }
+        }
+        Err(e) => eprintln!("[m3] falha ao salvar dump do frame: {e}"),
     }
 }
 
@@ -482,6 +602,8 @@ fn wire_chrome(
         ws.set(size);
         if let Some(r) = rt.borrow().as_ref() {
             r.webview.resize(size);
+            // M3 (ADR-0005): a ponte GPU é dimensionada ao offscreen; `pump_frame_gpu` detecta a
+            // mudança de tamanho e a recria (com o contexto do Servo corrente — ver lá).
         }
     });
 
@@ -617,6 +739,38 @@ impl FrameBench {
     }
 }
 
+/// Captura o device wgpu/Vulkan que o Slint cria, via o rendering notifier (`GraphicsAPI::WGPU28`).
+/// Só CLONA os handles (sem tocar GL aqui — evita a colisão do L-004); a ponte GPU é montada depois,
+/// no `pump_frame`. Roda na main thread durante o render do Slint. Devolve a célula compartilhada que
+/// o runtime lê; fica `None` se o notifier falhar (→ fallback de cópia-CPU).
+fn capture_wgpu_device(app: &MainWindow) -> Rc<RefCell<Option<WgpuCtx>>> {
+    let cell: Rc<RefCell<Option<WgpuCtx>>> = Rc::new(RefCell::new(None));
+    let sink = cell.clone();
+    let notifier = app
+        .window()
+        .set_rendering_notifier(move |state, graphics_api| {
+            if matches!(state, slint::RenderingState::RenderingSetup) {
+                if let slint::GraphicsAPI::WGPU28 {
+                    instance, device, ..
+                } = graphics_api
+                {
+                    let empty = sink.borrow().is_none();
+                    if empty {
+                        *sink.borrow_mut() = Some(WgpuCtx {
+                            instance: instance.clone(),
+                            device: device.clone(),
+                        });
+                        eprintln!("[m3] device wgpu/Vulkan capturado do Slint (RenderingSetup)");
+                    }
+                }
+            }
+        });
+    if let Err(e) = notifier {
+        eprintln!("[m3] set_rendering_notifier falhou ({e:?}); GPU desabilitado, fallback CPU");
+    }
+    cell
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Provedor de cripto process-wide p/ TLS. `install_default` falha se já houver um — ignorável.
     if rustls::crypto::aws_lc_rs::default_provider()
@@ -642,6 +796,9 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_page_url(url.to_string().into());
     }
 
+    // M3 (ADR-0005): captura o device wgpu/Vulkan que o Slint cria (ver `capture_wgpu_device`).
+    let wgpu_ctx = capture_wgpu_device(&app);
+
     let weak = app.as_weak();
     let runtime: Rc<RefCell<Option<Runtime>>> = Rc::new(RefCell::new(None));
     let sink = Rc::new(Embedder {
@@ -664,6 +821,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_weak = weak;
     let tick_logged = logged;
     let tick_web_size = web_size;
+    let tick_wgpu = wgpu_ctx;
     let init_ticks = Cell::new(0u32);
     let tick_bench = RefCell::new(FrameBench::new());
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
@@ -676,7 +834,12 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(app) = tick_weak.upgrade() else {
                 return;
             };
-            match init_runtime(app.window(), tick_sink.clone(), tick_web_size.get()) {
+            match init_runtime(
+                app.window(),
+                tick_sink.clone(),
+                tick_web_size.get(),
+                tick_wgpu.clone(),
+            ) {
                 Ok(rt) => {
                     eprintln!(
                         "[m1] runtime do Servo iniciado (offscreen GL sobre a janela do Slint)"
