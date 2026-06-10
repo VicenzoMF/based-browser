@@ -9,10 +9,17 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-# UI / chrome (M1). `raw-window-handle-06` expõe Window::window_handle() (HasWindowHandle +
+# UI / chrome. `raw-window-handle-06` expõe Window::window_handle() (HasWindowHandle +
 # HasDisplayHandle) — necessário p/ alimentar o WindowRenderingContext do Servo.
-# Backend winit + renderer vêm por default. Ver .specs/project/ROADMAP.md (M1) e ADR-0003.
-slint = { version = "1.16", features = ["raw-window-handle-06"] }
+# M3 (ADR-0005): `renderer-femtovg-wgpu` troca o renderer femtovg/GL por femtovg sobre wgpu/Vulkan
+# (no Linux) e `unstable-wgpu-28` habilita o import de textura wgpu (`Image::try_from(wgpu::Texture)`)
+# + o `BackendSelector::require_wgpu_28`. A API wgpu é acessada via `slint::wgpu_28::wgpu` (mesmo
+# crate que o Slint usa — sem dep `wgpu` separada). Ver .specs/project/ROADMAP.md (M3) e ADR-0005.
+slint = { version = "1.16", features = [
+    "raw-window-handle-06",
+    "unstable-wgpu-28",
+    "renderer-femtovg-wgpu",
+] }
 
 # Motor web (M1). Mesmo pin do ADR-0002 (=0.2.0); re-exporta os RenderingContext.
 servo = "=0.2.0"

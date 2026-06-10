@@ -549,6 +549,16 @@ fn main() -> Result<(), slint::PlatformError> {
         eprintln!("[m1] provedor de cripto rustls ja instalado (ok)");
     }
 
+    // M3 (ADR-0005): força o renderer femtovg sobre wgpu (Vulkan no Linux) ANTES de criar qualquer
+    // janela/componente. `Automatic` deixa o Slint criar instance/adapter/device wgpu; o caminho
+    // zero-copy do M3 extrai o VkDevice cru desse device via `as_hal`. Por ora (T0) o transporte de
+    // frame continua por cópia-CPU (`read_to_image`) — esta tarefa só de-risca a troca de renderer e
+    // a coexistência surfman/GL (Servo) + wgpu/Vulkan (Slint) na mesma janela (classe do L-004).
+    slint::BackendSelector::new()
+        .require_wgpu_28(slint::wgpu_28::WGPUConfiguration::default())
+        .select()?;
+    eprintln!("[m3] backend Slint: femtovg sobre wgpu/Vulkan (ADR-0005)");
+
     let app = MainWindow::new()?;
     app.set_frame(placeholder_frame(1024, 768));
     if let Ok(url) = home_page_url() {
