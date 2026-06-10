@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current Milestone:** M1 — MVP: Slint hospeda o Servo
-**Status:** Planning (M0 ✅ concluído em 2026-06-10)
+**Current Milestone:** M2 — Browser navegável
+**Status:** M1 ✅ concluído em 2026-06-10 (M0 ✅ no mesmo dia)
 
 ---
 
@@ -26,22 +26,23 @@
 
 ---
 
-## M1 — MVP: Slint hospeda o Servo
+## M1 — MVP: Slint hospeda o Servo ✅ CONCLUÍDO (2026-06-10)
 
-**Goal:** Primeiros pixels ponta-a-ponta: uma janela Slint exibindo conteúdo renderizado pelo Servo (URL fixa, cópia-CPU).
+**Goal:** Primeiros pixels ponta-a-ponta: uma janela Slint exibindo conteúdo renderizado pelo Servo (URL fixa, cópia-CPU). **Atingido** — `crates/basedbrowser` (Slint 1.16.1 + `servo` 0.2.0). Evidência: janela Slint exibindo HTML/CSS do Servo (screenshot confirmado pelo usuário). Detalhes em **ADR-0003**.
 
 ### Features
 
-**Bridge de event loop** - PLANNED
+**Bridge de event loop** - DONE
 
-- Slint dono da janela/loop (backend winit)
-- `EventLoopWaker` do Servo sincronizando frames Servo→Slint via canal
+- Slint dono da janela/loop (backend winit, renderer femtovg/GL)
+- `EventLoopWaker` do Servo + `slint::Timer` (~60 Hz) dirigindo `spin_event_loop`; `WebViewDelegate::notify_new_frame_ready` → pump-on-dirty
 
-**Render via cópia-CPU** - PLANNED
+**Render via cópia-CPU** - DONE
 
-- Servo renderiza em buffer offscreen (`OffscreenRenderingContext`)
-- Buffer → `slint::Image` a cada frame (via `set_rendering_notifier`)
-- Exibir uma URL fixa dentro da UI Slint
+- Servo renderiza num **`OffscreenRenderingContext`** (FBO de GL de hardware) derivado da janela do Slint (feature `raw-window-handle-06`)
+- `read_to_image` (RGBA8) → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame` a cada frame
+- URL fixa via `file://` (HTML/CSS auto-contido) exibida dentro da UI Slint
+- **Lição (ADR-0003):** init do contexto do Servo é LAZY (fora do `RenderingSetup` do femtovg) p/ não corromper o GL compartilhado
 
 ---
 

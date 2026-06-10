@@ -1,7 +1,7 @@
 # State
 
 **Last Updated:** 2026-06-10
-**Current Work:** **Marco M0 CONCLUÍDO** ✅ — Servo compila e renderiza isolado nesta máquina (Ubuntu 24.04), antes do Slint (AD-004). `crates/servo-poc` (winit + `servo` 0.2.0, sem Slint) buildou em **7m20s** e renderizou HTML/CSS numa janela winit (gradiente/flexbox/texto via webrender GL 4.6 Mesa Intel — confirmado por screenshot). ADR-0002 `Accepted` fixa o pin. **Próximo: M1** (Slint hospeda o Servo via cópia-CPU). Pendente humano (harness, não bloqueia M1): prune de MCP (`/mcp`) + autorizar AgentShield.
+**Current Work:** **Marco M1 CONCLUÍDO** ✅ — o **Slint hospeda o Servo**: `crates/basedbrowser` (Slint 1.16.1 + `servo` 0.2.0) exibe, numa janela Slint, uma página HTML/CSS renderizada pelo Servo via **cópia-CPU** (URL fixa `file://`). Pipeline: Servo `OffscreenRenderingContext` (FBO GL hardware, do handle da janela do Slint) → `read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`, bombeado por `slint::Timer`. **Evidência confirmada pelo usuário** (janela com heading+gradiente+flexbox; `/tmp/m1-window.png`, `/tmp/m1-servo-frame.png`). Decisão/arquitetura em **ADR-0003**; lição-chave em **L-004** (lazy-init evita corromper o GL). **Próximo: M2** (input + chrome mínimo → browser navegável). Pendentes humanos (harness, não bloqueiam M2): prune de MCP (`/mcp`); autorizar AgentShield; reavaliar escopo dos feedback-hooks agora que `basedbrowser` puxa o `servo` (ver Todos).
 
 ---
 
@@ -49,6 +49,13 @@
 **Trade-off:** `0.2.0` é feature release, não LTS (linha `0.1.x`); próximo bump pode ter mais churn. Mitigável migrando p/ LTS num ADR futuro.
 **Impact:** M1 já parte de um motor que comprovadamente builda+renderiza aqui. As deps de sistema continuam obrigatórias (apt) e a 1ª compilação ainda é cara (mas viável).
 
+### AD-007: M1 — Slint hospeda o Servo via OffscreenRenderingContext (hardware) + cópia-CPU (2026-06-10)
+
+**Decision:** Slint dono do loop/janela (renderer femtovg/GL); Servo renderiza num **`OffscreenRenderingContext`** (FBO de GL de **hardware**) derivado da janela do Slint (feature `raw-window-handle-06`); frame por **cópia-CPU** (`read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`), bombeado por `slint::Timer`. Formalizado no **ADR-0003**.
+**Reason:** Princípio do usuário (future-proof + maior desempenho): o `OffscreenRenderingContext` é o **mesmo tipo** que o caminho zero-copy do M3 exportará (dma-buf→wgpu), então M1→M3 troca só o readback. `SoftwareRenderingContext` (CPU) foi rejeitado salvo último recurso (descartável).
+**Trade-off:** Cópia-CPU por frame é gargalo até o M3 (AD-003); a coexistência de 2 contextos GL na mesma janela (femtovg+surfman) é sensível à ordem de init (ver L-004).
+**Impact:** Primeiros pixels do produto provados; base do M2 (input/chrome) e do M3 (GPU).
+
 ---
 
 ## Active Blockers
@@ -80,6 +87,13 @@ _Nenhum no momento._
 **Solution:** Não contornar via `sed` (seria burlar a intenção). O humano aplicou a 1 linha; `lefthook.yml` (não é config do agente) foi editável normalmente.
 **Prevents:** que um agente reescreva seus próprios guard-rails sem decisão humana explícita — defense-in-depth alinhado ao doc [D]. Para mexer em `.claude/hooks/**`, peça ao humano ou uma permission rule explícita.
 
+### L-004: Init do contexto GL do Servo dentro do RenderingSetup do Slint corrompe o GL (2026-06-10)
+
+**Context:** No M1, ao montar o `WindowRenderingContext`+`make_current` do Servo dentro de `set_rendering_notifier(RenderingSetup)` do Slint (femtovg/GL).
+**Problem:** Colidir o `make_current` do Servo com o setup do renderer do Slint corrompia o estado de GL compartilhado: femtovg emitia `Invalid value/operation`, e o Servo — apesar de completar o load (`LoadStatus::Complete`) — produzia frames em **branco** (`read_to_image` = RGBA 255). Sintoma idêntico no `SoftwareRenderingContext`, mascarando a causa.
+**Solution:** **Lazy-init** o contexto do Servo alguns ticks após o loop subir (`INIT_DELAY_TICKS`), FORA do setup do femtovg → os dois renderers de hardware coexistem. Sequência de leitura canônica (`servo-paint/screenshot.rs`): `paint` → `make_current` → `read_to_image`. `webview.show()`+`focus()` obrigatórios (sem `show()` a pipeline fica "fechada"/branca). Diagnóstico decisivo: logar `LoadStatus` + luminância média do frame + ler a fonte do `servo` no cache do cargo.
+**Prevents:** semanas perdidas em "tela branca" ao integrar dois renderers de GPU na mesma janela. (No M3, o caminho correto é o *texture sharing* do exemplo oficial.) **Processo:** decisão de rendering é do usuário — não trocar a abordagem combinada (ex.: cair p/ software) sem avisar (correção feita nesta sessão).
+
 ---
 
 ## Quick Tasks Completed
@@ -93,7 +107,7 @@ _Nenhum no momento._
 
 - [ ] Medição sistemática de RAM vs. Chromium para validar a tese central — Captured during: project init
 - [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
-- [ ] Render-diff / "olhos" E2E — destrava no M1 — Captured during: harness H2
+- [ ] Render-diff / "olhos" E2E — **destravado (M1 ✅)**; nota: captura de **janela** automatizada está bloqueada no GNOME 46/Wayland (gdbus negado; `import`/X11 não vê Wayland). Caminho viável p/ E2E: dump in-app do frame (`BASEDBROWSER_DUMP_FRAME=<path>`) e comparar PNGs — Captured during: harness H2
 - [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
 - [ ] Custom lints com fix-instructions — adicionar quando o agente errar (princípio doc [A]) — Captured during: harness H3
 - [ ] Ativar a sandbox `sandbox/docker-compose.yml` (rodar browser sobre URL não confiável) — M1 — Captured during: harness H3
@@ -111,6 +125,8 @@ _Nenhum no momento._
 - [x] H1: instalar lefthook — feito (v2.1.9, `lefthook install` sincronizado)
 - [ ] Autorizar/rodar AgentShield (`npx ecc-agentshield scan`) — bloqueado pelo sandbox (pacote vindo de doc; ver L-002) — decisão do usuário
 - [x] H2–H4 infra: hooks PreToolUse/Stop/SessionStart, sandbox skeleton, template de métricas — feito e testado
+- [ ] **Reavaliar escopo dos feedback-hooks** agora que `basedbrowser` puxa o `servo` — M2 (humano, L-003): hoje `gate-build.sh` e `lefthook.yml` usam `--exclude servo-poc`; o cache aquecido mantém os checks rápidos (clippy do basedbrowser ~0.7s), mas a 1ª build fria recompila o motor. Se virar atrito, aplicar `--exclude basedbrowser` (decisão humana).
+- [x] M1: primeiros pixels Slint↔Servo (cópia-CPU) — feito (ADR-0003, L-004); evidência confirmada pelo usuário
 
 ---
 

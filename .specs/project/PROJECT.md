@@ -14,9 +14,9 @@
 
 **Core:**
 
-- Linguagem: Rust 1.90.0 (stable; Servo pode exigir toolchain fixado — validar na Fase 0)
-- UI / chrome: Slint (declarativo, backend `winit`) — v1.12.x
-- Motor web: Servo / `libservo` (`WebView` API) — fixado a uma revisão git
+- Linguagem: Rust **1.92.0** (stable, fixado em `rust-toolchain.toml` — é a toolchain do tag v0.2.0 do Servo; ADR-0002)
+- UI / chrome: Slint (declarativo, backend `winit`, renderer femtovg/GL) — **v1.16.x** (feature `raw-window-handle-06`)
+- Motor web: Servo (`servo` 0.2.0 do **crates.io**, `WebView` API) — pin exato `=0.2.0` (ADR-0002)
 - Janela / event loop: `winit` (Slint é dono do loop)
 
 **Key dependencies:**
@@ -45,7 +45,7 @@
 
 ## Constraints
 
-- **Técnico:** Servo não é um crate do crates.io — compila contra a árvore do Servo (build de vários GB, muitas deps de sistema, primeira compilação longa). Maior custo de infraestrutura.
+- **Técnico:** Servo agora **é** crate do crates.io (`servo` 0.2.0; ver ADR-0002/AD-006), mas ainda compila o motor inteiro + mozjs do fonte (vários GB, muitas deps de sistema via apt, 1ª compilação longa — ~5–7 min aqui). Maior custo de infraestrutura.
 - **Técnico:** API do Servo muda rápido; manter revisão fixada e embedding fino.
 - **Plataforma:** desenvolvimento e alvo inicial = Linux (Ubuntu 24.04), GPU via Vulkan→GL.
 - **Recursos:** projeto solo / long-term; priorizar de-risking (provar o motor antes de polir UI).

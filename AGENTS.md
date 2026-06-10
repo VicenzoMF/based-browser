@@ -24,4 +24,5 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
-Marco **M0** (provar o build do Servo, isolado) + harness **H1**. Servo ainda não integrado.
+Marco **M1 ✅** — Slint hospeda o Servo: `crates/basedbrowser` exibe página do Servo numa janela
+Slint via cópia-CPU (ADR-0003, L-004). Próximo: **M2** (input + chrome navegável). Harness **H1** ok.
