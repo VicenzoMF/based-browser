@@ -22,8 +22,9 @@ changed="$(git diff --name-only HEAD -- '*.rs' 2>/dev/null; git ls-files --other
 # Guard de build fria: se o motor (servo) ainda nao foi compilado neste target, uma build aqui
 # recompilaria o motor (varios minutos) e estouraria o timeout de 120s do Stop. Nesse caso pulamos
 # (a 1a build do motor e deliberada/manual: `cargo build -p basedbrowser`). Com o cache quente, o
-# gate roda normalmente e cobre o basedbrowser.
-if ! ls target/debug/deps/libservo-*.rlib >/dev/null 2>&1; then
+# gate roda normalmente e cobre o basedbrowser. (Glob do bash em vez de `ls`/redirect.)
+servo_rlibs=(target/debug/deps/libservo-*.rlib)
+if [ ! -e "${servo_rlibs[0]}" ]; then
   echo "gate-build: motor (servo) ainda nao compilado neste target; pulando build fria (rode 'cargo build -p basedbrowser' manualmente)." >&2
   exit 0
 fi
