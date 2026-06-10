@@ -1,61 +1,61 @@
 # Handoff
 
 **Date:** 2026-06-10
-**Feature:** M2 — Browser navegável ✅ CONCLUÍDO · próximo = M3 (render GPU / texture sharing)
-**Task:** M2 fechado: input + chrome + resize sobre o pipeline cópia-CPU do M1. Iniciar M3.
+**Feature:** M3 — Render GPU zero-copy ✅ CONCLUÍDO · próximo = M4 (recursos de navegador)
+**Task:** M3 fechado: texture sharing Vulkan↔GL elimina a cópia-CPU por frame. Iniciar M4.
 
 ## Completed ✓
 
-- **M2 done** (critério: digitar URL e navegar, clicar/scrollar/digitar na página, voltar/avançar/
-  recarregar, indicador de carregamento, resize — com evidência):
-  - **Input** (`src/input.rs`): pointer (`MouseButton`/`MouseMove`), scroll (`notify_scroll_event`,
-    delta invertido), teclado (`slint::platform::Key` → `keyboard_types::NamedKey`/`Character`). O
-    `.slint` decodifica a primitivos; mapeamento de coordenadas **identidade** (`physical-length` +
-    `image-fit: fill` + offscreen do tamanho da área web).
-  - **Chrome** (`MainWindow` inline + `wire_chrome` + `Embedder`): barra de URL (`load`/`parse_user_url`),
-    voltar/avançar/recarregar (guardados por `can_go_*`), indicador de carregamento e título via
-    `WebViewDelegate` (`notify_load_status_changed`/`url_changed`/`history_changed`/`page_title_changed`).
-  - **Resize:** `webview.resize` redimensiona só o `OffscreenRenderingContext`; o `WindowRenderingContext`
-    pai NÃO é tocado (evita a colisão GL do L-004) — verificado sem corrupção.
-  - **Evidência confirmada pelo usuário:** YouTube renderizado via barra de URL (HTTPS/TLS;
-    `/tmp/m2-youtube-evidence.png`); texto digitado num `<input>` (`/tmp/m2-start-frame.png`);
-    scroll/voltar/avançar/recarregar/resize OK; **log sem erros de GL**.
-  - **ADR-0004 `Accepted`** (input + resize). **AD-008** no STATE. **L-005** (travamento = debug +
-    cópia-CPU; não é bug). Sem deps novas; waker real adiado.
-  - Commits: `0317932` (T1 chrome), `9045702` (T2 pointer/scroll), `7389396` (T3 teclado),
-    `72d58f9` (T4 navegação), `5d5727f` (T5 resize), + T6 (página de teste + docs).
+- **M3 done** (critério: frame Servo→Slint SEM cópia-CPU + benchmark mostrando ganho + evidência):
+  - **Renderer** (T0): Slint femtovg/GL → **`femtovg-wgpu` (Vulkan)** via `unstable-wgpu-28` +
+    `BackendSelector::require_wgpu_28(Automatic)`. Smoke: app renderiza no novo renderer, sem erros
+    de GL (L-004 não regrediu). ADR-0005.
+  - **Benchmark** (T1): `FrameBench` (env `BASEDBROWSER_BENCH`) mede o tempo do `pump_frame`; override
+    `BASEDBROWSER_URL` p/ benchmark reproduzível. Baseline cópia-CPU ~5,4 ms.
+  - **Zero-copy** (T2–T4, `src/gpu_bridge.rs`): imagem Vulkan c/ memória externa (`OPAQUE_FD`) → FD →
+    import no GL do Servo (`glImportMemoryFdEXT`/`glTexStorageMem2DEXT`) → `wgpu::Texture`
+    (`create_texture_from_hal`/`texture_from_raw(External)`) → `Image::try_from`. Por frame:
+    `paint` → `glBlitFramebuffer` (flip Y) → `glFinish` → `set_frame`. Device wgpu capturado via
+    `set_rendering_notifier`; handles via `as_hal::<Vulkan>()`. Todo `unsafe` isolado/justificado.
+    **Fallback** de cópia-CPU em runtime (não foi necessário).
+  - **Evidência:** readback da textura compartilhada **byte a byte idêntico** à fonte do Servo
+    (1024×724, orientação correta) — `/tmp/m3-evidence-source.png` ≡ `/tmp/m3-evidence-gpu-zerocopy.png`;
+    página HTTPS real (example.com) renderizada pelo zero-copy (`/tmp/m3-real.png.gpu.png`).
+  - **Benchmark (release, 60fps):** `pump_frame` mean **5,4 ms (CPU) → 3,1 ms (GPU)**, p95 ~6–9 →
+    ~3,7 ms (**−40% média, −50% p95**). Ataca o L-005.
+  - **ADR-0005** (arquitetura) + **ADR-0006** (validação/fechamento). **AD-009** + **L-006** no STATE.
+    Deps novas: `ash 0.38` + `gl 0.14` (wgpu via `slint::wgpu_28::wgpu`); pin `servo =0.2.0`/toolchain/
+    lints raiz intocados. Commits: T0 (renderer), T1 (benchmark), T2–T4 (zero-copy).
 
 ## In Progress
 
-- Nada — checkpoint limpo na `main` (T1–T5 commitados; T6 = página de teste + docs neste commit).
+- Nada — checkpoint limpo na `main` (T0/T1/T2–T4 commitados; este commit = docs/STATE/ROADMAP/HANDOFF).
 
-## Pending (M3 — Performance: render GPU)
+## Pending (M4 — Recursos de navegador)
 
-1. **Texture sharing** Vulkan/dma-buf → import em GL/`wgpu` (eliminar a cópia-CPU por frame).
-2. Slint no renderer `wgpu`; wrap da textura compartilhada; flip vertical + blit.
-3. Benchmark cópia-CPU vs. GPU sharing (mede o ganho que destrava a L-005).
-4. (barato, paralelo) **Waker real** p/ reduzir CPU ocioso do `Timer` 60 Hz.
+1. Multi-aba, histórico de sessão, favoritos (dentro dos limites de compat do Servo).
+2. (barato, paralelo) **Sync por fence/semáforo** no lugar do `glFinish` (ganho extra sobre os 3,1 ms).
+3. (barato, paralelo) **Waker real** p/ reduzir CPU ocioso do `Timer` 60 Hz.
 
 ## Blockers
 
-- Nenhum ativo. Pendências humanas (não bloqueiam M3): conectores globais claude.ai (só na web);
+- Nenhum ativo. Pendências humanas (não bloqueiam M4): conectores globais claude.ai (só na web);
   2 deny rules do AgentShield no `settings.json` (precisa de OK explícito).
 
 ## Context
 
 - Branch: `main`. Idioma: **pt-BR**. Plan Mode antes de executar.
-- **Perf (L-005):** travamento em páginas pesadas = build **debug** + **cópia-CPU** por frame (+
-  Timer sem waker). `--release` ajuda; o M3 (texture sharing) elimina a causa estrutural. NÃO trocar
-  arquitetura por isso antes do M3.
-- **Resize (L-004 / ADR-0004):** redimensionar só o offscreen via `webview.resize`; nunca o
-  `WindowRenderingContext` pai (resize concorrente das 2 superfícies GL corrompe o estado).
-- **L-004 (M1):** init do contexto do Servo é LAZY (fora do `RenderingSetup`); `show()`+`focus()`
-  obrigatórios; sequência `paint`→`make_current`→`read_to_image`.
-- **Fonte do `servo` 0.2.0 no cache do cargo** é a referência mais confiável da API (re-exporta
-  `embedder_traits::*` + `keyboard_types` + `webrender_api::units`).
-- Rodar: `cargo run -p basedbrowser` (precisa de display). Dump de evidência:
-  `BASEDBROWSER_DUMP_FRAME=/tmp/x.png cargo run -p basedbrowser`. Captura de **janela** automatizada
-  segue bloqueada no GNOME 46/Wayland — usar dump in-app + screenshot manual.
-- O M3 é a razão de o M1/M2 usarem `OffscreenRenderingContext` (hardware): o tipo já é o do caminho
-  de GPU; troca-se só o readback.
-- Decisões: STATE AD-001..008 · Lições: L-001..005 · ADRs: 0001..0004.
+- **M3 (ADR-0005/0006 / L-006):** GL e Vulkan têm ordem de linha OPOSTA na mesma memória → o blit faz
+  flip Y; o readback de evidência NÃO leva flip extra. wgpu acessado via `slint::wgpu_28::wgpu` (sem
+  dep separada). `ash` casa a versão do wgpu-hal (0.38.x). O device automático do Slint já habilita
+  `VK_KHR_external_memory_fd`. Ler a fonte do cache do cargo é o que de-riscou o interop.
+- **L-004 (M1):** init do contexto do Servo é LAZY (fora do setup do renderer); `show()`+`focus()`;
+  no M3 o device wgpu é capturado no notifier mas SÓ clonado (nenhuma op GL ali).
+- **Resize (ADR-0004):** só o offscreen via `webview.resize`; a ponte GPU é recriada no novo tamanho
+  (guarda de tamanho no `pump_frame_gpu`).
+- Rodar: `cargo run -p basedbrowser` (precisa de display; renderer Vulkan/wgpu). Benchmark:
+  `BASEDBROWSER_BENCH=1 cargo run -p basedbrowser --release`. Evidência:
+  `BASEDBROWSER_DUMP_FRAME=/tmp/x.png` (salva fonte + `.gpu.png` da textura compartilhada).
+  Captura de **janela** automatizada segue bloqueada no GNOME 46/Wayland.
+- **1ª build com features wgpu é cara** (compila wgpu/naga/ash; release recompila o motor inteiro).
+- Decisões: STATE AD-001..009 · Lições: L-001..006 · ADRs: 0001..0006.

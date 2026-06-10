@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current Milestone:** M3 — Performance: render GPU
-**Status:** M2 ✅ concluído em 2026-06-10 (M0 e M1 ✅ no mesmo dia)
+**Current Milestone:** M4 — Recursos de navegador
+**Status:** M3 ✅ concluído em 2026-06-10 (M0, M1, M2 ✅ no mesmo dia)
 
 ---
 
@@ -77,18 +77,31 @@ travadas — esperado até o M3 (ver Lições/Deferred).
 
 ---
 
-## M3 — Performance: render GPU
+## M3 — Performance: render GPU ✅ CONCLUÍDO (2026-06-10)
 
 **Goal:** Eliminar o gargalo da cópia-CPU por frame com compartilhamento de textura GPU.
+**Atingido** — `crates/basedbrowser/src/gpu_bridge.rs`: o frame Servo→Slint NÃO passa mais por
+cópia-CPU. Renderer do Slint trocado p/ `femtovg-wgpu` (Vulkan). Decisões em **ADR-0005** (arquitetura)
++ **ADR-0006** (validação). Input/chrome/resize do M2 intactos.
 
 ### Features
 
-**Texture sharing Vulkan→GL** - PLANNED
+**Texture sharing Vulkan↔GL** - DONE
 
-- Imagem Vulkan com memória externa (FD) → import em OpenGL (`GL_EXT_memory_object_fd`)
-- Wrap como textura `wgpu` no lado Slint
-- Flip vertical (mismatch de coordenadas GL) + blit
-- Benchmark cópia-CPU vs. GPU sharing
+- Imagem Vulkan com memória externa (`OPAQUE_FD`) → FD (`vkGetMemoryFdKHR`) → import em OpenGL
+  (`GL_EXT_memory_object_fd`: `glImportMemoryFdEXT`/`glTexStorageMem2DEXT`)
+- Wrap como `wgpu::Texture` no lado Slint (`create_texture_from_hal::<Vulkan>` +
+  `texture_from_raw(External)`) → `slint::Image::try_from`; device wgpu capturado via
+  `set_rendering_notifier`
+- Flip vertical (mismatch GL↔Vulkan) no `glBlitFramebuffer` + `glFinish` (sync v1)
+- **Fallback** de cópia-CPU em runtime (não foi necessário)
+
+**Benchmark cópia-CPU vs. GPU sharing** - DONE
+
+- Harness `FrameBench` (env `BASEDBROWSER_BENCH`). Release, 1024×724, página animada @60fps:
+  `pump_frame` mean **~5,4 ms (CPU) → ~3,1 ms (GPU)**, p95 ~6–9 → ~3,7 ms (**−40% média, −50% p95**)
+- Evidência: readback da textura compartilhada **byte a byte idêntico** à fonte do Servo + página
+  HTTPS real (example.com). Captura de janela bloqueada no Wayland → dump in-app (ADR-0003)
 
 ---
 

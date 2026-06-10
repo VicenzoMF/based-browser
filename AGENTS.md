@@ -24,7 +24,8 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
-Marco **M2 ✅** — browser navegável: `crates/basedbrowser` tem input (pointer/scroll/teclado →
-Servo), chrome (URL + voltar/avançar/recarregar + loading) e resize dinâmico, sobre a cópia-CPU do
-M1 (ADR-0004, AD-008, L-005). Próximo: **M3** (render GPU / texture sharing — elimina a cópia-CPU).
-Harness **H1** ok.
+Marco **M3 ✅** — render GPU zero-copy: `crates/basedbrowser/src/gpu_bridge.rs` faz texture sharing
+via memória externa Vulkan↔GL (renderer `femtovg-wgpu`), eliminando a cópia-CPU por frame
+(`read_to_image` saiu do caminho quente). Benchmark: pump −40% (5,4→3,1 ms). Sobre o input/chrome/
+resize do M2 (ADR-0004, AD-008) e o pipeline do M1. Decisões em **ADR-0005/0006, AD-009, L-006**.
+Próximo: **M4** (recursos: multi-aba, histórico, favoritos). Harness **H1** ok.
