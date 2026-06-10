@@ -270,7 +270,11 @@ struct Runtime {
 /// Cria o `Servo` + `WebView` renderizando num `OffscreenRenderingContext` (FBO de GL de hardware)
 /// derivado da janela do Slint. `show()` + `focus()` são necessários: sem `show()` a pipeline fica
 /// "fechada" e renderiza em branco.
-fn init_runtime(window: &slint::Window, sink: Rc<Embedder>) -> Result<Runtime, String> {
+fn init_runtime(
+    window: &slint::Window,
+    sink: Rc<Embedder>,
+    web_size: dpi::PhysicalSize<u32>,
+) -> Result<Runtime, String> {
     let provider = window.window_handle();
     let display_handle = provider
         .display_handle()
@@ -279,14 +283,18 @@ fn init_runtime(window: &slint::Window, sink: Rc<Embedder>) -> Result<Runtime, S
         .window_handle()
         .map_err(|e| format!("window_handle: {e}"))?;
 
+    // O contexto PAI cobre a janela inteira (é a superfície GL da janela); o offscreen do Servo é
+    // dimensionado pela ÁREA WEB (exclui a toolbar), o que torna o mapeamento de coordenadas
+    // identidade (ver doc do módulo). O resize dinâmico só mexe no offscreen (ver `wire_chrome`).
     let size = window.size();
-    let physical = dpi::PhysicalSize::new(size.width.max(1), size.height.max(1));
+    let window_physical = dpi::PhysicalSize::new(size.width.max(1), size.height.max(1));
+    let web_physical = dpi::PhysicalSize::new(web_size.width.max(1), web_size.height.max(1));
 
     let parent = Rc::new(
-        WindowRenderingContext::new(display_handle, window_handle, physical)
+        WindowRenderingContext::new(display_handle, window_handle, window_physical)
             .map_err(|e| format!("WindowRenderingContext::new: {e:?}"))?,
     );
-    let context = Rc::new(parent.offscreen_context(physical));
+    let context = Rc::new(parent.offscreen_context(web_physical));
 
     let servo = ServoBuilder::default()
         .event_loop_waker(Box::new(PeriodicWaker))
@@ -307,6 +315,18 @@ fn init_runtime(window: &slint::Window, sink: Rc<Embedder>) -> Result<Runtime, S
         context,
         _parent: parent,
     })
+}
+
+/// Converte um comprimento físico (`f32`, vindo do Slint como `physical-length`) para pixels,
+/// arredondando e garantindo o mínimo de 1 (o `OffscreenRenderingContext` exige dimensões >= 1x1).
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "physical-length é finito e >= 0; arredondado e clampado a [1, u16::MAX]"
+)]
+fn physical_px(value: f32) -> u32 {
+    value.round().clamp(1.0, f32::from(u16::MAX)) as u32
 }
 
 /// Interpreta o texto digitado na barra como `Url`. Se já é uma URL absoluta (tem esquema), usa
@@ -385,7 +405,26 @@ fn pump_frame(runtime: &Runtime, weak: &slint::Weak<MainWindow>, logged: &Cell<b
 /// handler captura um clone do runtime compartilhado; se o evento chegar antes do init lazy, o
 /// `if let Some` ignora com segurança. Borrows são curtos e os callbacks do Slint rodam
 /// serializados com o `Timer` na main thread (sem reentrância no `RefCell`).
-fn wire_chrome(app: &MainWindow, runtime: &Rc<RefCell<Option<Runtime>>>) {
+fn wire_chrome(
+    app: &MainWindow,
+    runtime: &Rc<RefCell<Option<Runtime>>>,
+    web_size: &Rc<Cell<dpi::PhysicalSize<u32>>>,
+) {
+    // Resize: o `.slint` dispara `web-resized` com o tamanho FÍSICO da área web quando o layout
+    // muda. Guardamos para o init lazy e, se o runtime já existe, redimensionamos só o contexto
+    // OFFSCREEN via `webview.resize` (recria o FBO + reflui o viewport; ver painter.rs). NÃO
+    // tocamos o `WindowRenderingContext` pai — resize concorrente das duas superfícies GL é o que
+    // corrompia o estado compartilhado no M1 (L-004 / ADR-0003).
+    let rt = runtime.clone();
+    let ws = web_size.clone();
+    app.on_web_resized(move |w, h| {
+        let size = dpi::PhysicalSize::new(physical_px(w), physical_px(h));
+        ws.set(size);
+        if let Some(r) = rt.borrow().as_ref() {
+            r.webview.resize(size);
+        }
+    });
+
     let rt = runtime.clone();
     app.on_forward_pointer(move |x, y, kind, button| {
         if let Some(r) = rt.borrow().as_ref() {
@@ -475,8 +514,11 @@ fn main() -> Result<(), slint::PlatformError> {
         app: app.as_weak(),
     });
     let logged = Rc::new(Cell::new(false));
+    // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
+    // para o valor real durante o layout (antes do init lazy do Servo).
+    let web_size = Rc::new(Cell::new(dpi::PhysicalSize::new(1024_u32, 744_u32)));
 
-    wire_chrome(&app, &runtime);
+    wire_chrome(&app, &runtime, &web_size);
 
     // Dirige o Servo e bombeia frames. O runtime é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -486,6 +528,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_sink = sink;
     let tick_weak = weak;
     let tick_logged = logged;
+    let tick_web_size = web_size;
     let init_ticks = Cell::new(0u32);
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         if tick_runtime.borrow().is_none() {
@@ -497,7 +540,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(app) = tick_weak.upgrade() else {
                 return;
             };
-            match init_runtime(app.window(), tick_sink.clone()) {
+            match init_runtime(app.window(), tick_sink.clone(), tick_web_size.get()) {
                 Ok(rt) => {
                     eprintln!(
                         "[m1] runtime do Servo iniciado (offscreen GL sobre a janela do Slint)"
