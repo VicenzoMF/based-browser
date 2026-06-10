@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/basedbrowser"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+
+# --- Lints do workspace (padrão "rust-magic-linter", ver HARNESS-ROADMAP H1) ---
+# Estrutura: o agente não consegue silenciar lint sem deixar rastro, e o CI barra.
+# `pedantic` é um GRUPO → precisa de priority = -1 para os lints individuais abaixo
+# poderem sobrescrevê-lo.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"        # propague erros; em testes é liberado via clippy.toml
+expect_used = "deny"
+dbg_macro = "deny"
+allow_attributes = "warn"   # use #[expect(..., reason = "...")] em vez de #[allow(...)]
+                            # pode ser endurecido para "deny" quando o código estabilizar.
+
+[workspace.lints.rust]
+unsafe_code = "warn"        # haverá `unsafe` no interop GPU (M3); justifique com
+                            # #[expect(unsafe_code, reason = "...")] caso a caso.

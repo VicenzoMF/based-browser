@@ -1,0 +1,6 @@
+# CONFIG PROTEGIDA (ver ADR-0001 / AGENTS.md): trocar só via ADR novo.
+# Por ora "stable" (= 1.90.0 nesta máquina). O M0 pode pinar a VERSÃO EXATA exigida
+# pelo Servo — quando isso acontecer, registre em ADR e fixe aqui.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

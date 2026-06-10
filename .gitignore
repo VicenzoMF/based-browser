@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Segredos — NUNCA commitar
+.env
+.env.*
+*.pem
+*.key
+*.keystore
+
+# Lefthook local (overrides do dev)
+lefthook-local.yml
+
+# Índice local do MCP Pageboy (artefato de ferramenta, não faz parte do projeto)
+data/pageboy.db
+data/pageboy.db-*

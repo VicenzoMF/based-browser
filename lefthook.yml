@@ -1,0 +1,12 @@
+# Pre-commit rápido (Lefthook, Go-based). Instalar uma vez por clone: `lefthook install`.
+# Para overrides locais do dev, use `lefthook-local.yml` (git-ignored).
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    clippy:
+      # [tailoring] Quando o Servo virar dependência, escopar este comando aos crates
+      # do app (ex.: -p basedbrowser) para NÃO recompilar o motor a cada commit.
+      run: cargo clippy --workspace --all-targets -- -D warnings

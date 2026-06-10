@@ -1,0 +1,8 @@
+# Permite unwrap/expect em código de teste (onde panicar é aceitável),
+# mantendo o deny em código de produção. Ver Cargo.toml [workspace.lints.clippy].
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Vocabulário do projeto p/ clippy::doc_markdown (pedantic): nomes próprios que NÃO
+# precisam de backticks em doc-comments. ".." mantém a lista padrão do clippy e estende.
+doc-valid-idents = ["..", "BasedBrowser", "Slint", "Servo", "WebRender", "WebGPU", "Vulkan", "Surfman", "AccessKit", "winit"]
