@@ -21,6 +21,12 @@ slint = { version = "1.16", features = [
     "renderer-femtovg-wgpu",
 ] }
 
+# M4 (ADR-0007): o chrome saiu da macro inline grande p/ `ui/app.slint`, re-exportado pela macro
+# inline (`slint::slint!(export { MainWindow } from "../ui/app.slint");`). Mantém a UI num arquivo
+# `.slint` (LSP/preview) SEM `build.rs`/`include_modules!()`: o código gerado por `include_modules!`
+# vira fonte do crate e trombaria com os lints `deny` (unwrap/expect) — a expansão da macro inline
+# é isenta do clippy. Decisão registrada no ADR-0007.
+
 # Motor web (M1). Mesmo pin do ADR-0002 (=0.2.0); re-exporta os RenderingContext.
 servo = "=0.2.0"
 

@@ -35,127 +35,13 @@ use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
 use url::Url;
 
-slint::slint! {
-    import { Button, LineEdit } from "std-widgets.slint";
-
-    // Chrome do M2: barra de navegação + área web. O `.slint` apenas DECODIFICA cada evento
-    // para primitivos e chama um callback; a tradução primitivo -> `InputEvent` do Servo mora no
-    // Rust (`input.rs`). Coordenadas: declarar os params como `physical-length` faz o Slint
-    // converter logical -> físico pelo scale factor da janela, e como a Image usa `image-fit: fill`
-    // sobre um contexto do Servo do MESMO tamanho da área web, o mapeamento é identidade
-    // (physical-px == device-px do Servo). Sem matemática de letterbox.
-    export component MainWindow inherits Window {
-        // Dirigidas pelo Rust (pipeline de frame + WebViewDelegate).
-        in property <image> frame;
-        in property <string> page-url;
-        in property <bool> loading;
-        in property <bool> can-go-back;
-        in property <bool> can-go-forward;
-        in property <string> window-title: "BasedBrowser";
-
-        // Chrome -> Rust.
-        callback load-url(string);
-        callback go-back();
-        callback go-forward();
-        callback reload();
-        // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
-        // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
-        // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
-        callback forward-pointer(physical-length, physical-length, int, int);
-        callback forward-scroll(physical-length, physical-length, length, length);
-        callback forward-key(string, bool, bool, bool, bool, bool, bool);
-        callback web-resized(physical-length, physical-length);
-
-        title: root.window-title;
-        preferred-width: 1024px;
-        preferred-height: 768px;
-
-        VerticalLayout {
-            padding: 0;
-            spacing: 0;
-
-            // Barra de navegação (altura natural; não estica).
-            HorizontalLayout {
-                vertical-stretch: 0;
-                padding: 6px;
-                spacing: 6px;
-                Button {
-                    text: "<";
-                    enabled: root.can-go-back;
-                    clicked => { root.go-back(); }
-                }
-                Button {
-                    text: ">";
-                    enabled: root.can-go-forward;
-                    clicked => { root.go-forward(); }
-                }
-                Button {
-                    text: "Recarregar";
-                    clicked => { root.reload(); }
-                }
-                LineEdit {
-                    placeholder-text: "Digite uma URL e tecle Enter";
-                    text: root.page-url;
-                    accepted(t) => { root.load-url(t); }
-                }
-                if root.loading : Text {
-                    vertical-alignment: center;
-                    color: #aaaaaa;
-                    text: "carregando...";
-                }
-            }
-
-            // Area web: a Image exibe o frame do Servo; a TouchArea captura pointer/scroll e o
-            // FocusScope captura teclado. `web-resized` dispara quando o layout muda o tamanho.
-            web := Rectangle {
-                vertical-stretch: 1;
-                background: #1e1e26;
-                changed width => { root.web-resized(self.width, self.height); }
-                changed height => { root.web-resized(self.width, self.height); }
-
-                Image {
-                    width: 100%;
-                    height: 100%;
-                    image-fit: fill;
-                    source: root.frame;
-                }
-                fs := FocusScope {
-                    width: 100%;
-                    height: 100%;
-                    key-pressed(e) => {
-                        root.forward-key(e.text, true, e.modifiers.control, e.modifiers.shift,
-                            e.modifiers.alt, e.modifiers.meta, e.repeat);
-                        accept
-                    }
-                    key-released(e) => {
-                        root.forward-key(e.text, false, e.modifiers.control, e.modifiers.shift,
-                            e.modifiers.alt, e.modifiers.meta, false);
-                        accept
-                    }
-                    TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        pointer-event(e) => {
-                            root.forward-pointer(
-                                self.mouse-x,
-                                self.mouse-y,
-                                e.kind == PointerEventKind.down ? 0
-                                    : e.kind == PointerEventKind.up ? 1 : 2,
-                                e.button == PointerEventButton.left ? 0
-                                    : e.button == PointerEventButton.right ? 1
-                                    : e.button == PointerEventButton.middle ? 2 : 3);
-                            fs.focus();
-                        }
-                        scroll-event(e) => {
-                            root.forward-scroll(self.mouse-x, self.mouse-y, e.delta-x, e.delta-y);
-                            accept
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+// M4 (ADR-0007): o chrome saiu da macro inline grande para `ui/app.slint` (LSP/preview, e p/ crescer
+// no M4: abas + favoritos + histórico), MAS continua entrando pela macro `slint::slint!` — agora só
+// re-exportando o componente do arquivo. Caminho relativo ao `.rs` (toolchain ≥1.88; temos 1.92).
+// NÃO usamos `build.rs`/`include_modules!()` de propósito: aquele caminho injeta o `app.rs` gerado
+// como FONTE do crate, e o código gerado usa `.unwrap()`/`.expect()` à vontade → trombaria com os
+// lints `deny` do projeto; a expansão da macro inline (crate externo) é isenta do clippy. Ver ADR-0007.
+slint::slint!(export { MainWindow } from "../ui/app.slint";);
 
 /// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
 /// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
