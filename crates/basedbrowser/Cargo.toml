@@ -10,6 +10,14 @@ workspace = true
 
 [dependencies]
 # UI / chrome (M1). `raw-window-handle-06` expõe Window::window_handle() (HasWindowHandle +
-# HasDisplayHandle) — necessário no T2 p/ alimentar o WindowRenderingContext do Servo.
+# HasDisplayHandle) — necessário p/ alimentar o WindowRenderingContext do Servo.
 # Backend winit + renderer vêm por default. Ver .specs/project/ROADMAP.md (M1) e ADR-0003.
 slint = { version = "1.16", features = ["raw-window-handle-06"] }
+
+# Motor web (M1). Mesmo pin do ADR-0002 (=0.2.0); re-exporta os RenderingContext.
+servo = "=0.2.0"
+
+# Ponte de handles Slint→Servo (ambos em raw-window-handle 0.6) e tipo de tamanho físico.
+# Versões casadas com as que o servo 0.2.0 declara (ver crates/servo-poc/Cargo.toml).
+raw-window-handle = "0.6"
+dpi = "0.1"
