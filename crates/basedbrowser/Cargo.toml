@@ -21,3 +21,10 @@ servo = "=0.2.0"
 # Versões casadas com as que o servo 0.2.0 declara (ver crates/servo-poc/Cargo.toml).
 raw-window-handle = "0.6"
 dpi = "0.1"
+
+# Pipeline de frame (M1, cópia-CPU): URL fixa, fator de escala HiDPI, leitura do frame
+# (read_to_image -> image::RgbaImage) e provedor de cripto p/ TLS (mesmo do servo-poc).
+url = "2.5"
+euclid = "0.22"
+image = "0.25"
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
