@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 mod gpu_bridge;
 mod input;
+mod persist;
 
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -143,6 +144,10 @@ impl EventLoopWaker for ServoWaker {
 struct Embedder {
     dirty: Cell<bool>,
     app: slint::Weak<MainWindow>,
+    /// Estado de persistência (favoritos/histórico). M4: o delegate registra cada visita aqui (à
+    /// medida que a URL muda) e persiste. É um `RefCell` SEPARADO do `Runtime` — o loop nunca o
+    /// empresta durante `spin_event_loop`, então o `borrow_mut` no callback não é reentrante.
+    data: Rc<RefCell<persist::AppData>>,
 }
 
 impl Embedder {
@@ -171,6 +176,11 @@ impl WebViewDelegate for Embedder {
         if let Some(app) = self.app.upgrade() {
             app.set_page_url(url.to_string().into());
         }
+        // M4: registra a visita no histórico (persistido). O título pode ainda não ter chegado nesta
+        // fase do load (vem depois via `notify_page_title_changed`); gravamos o que se sabe — o dedup
+        // consecutivo de `record_visit` atualiza a entrada se a mesma URL reaparecer com título.
+        let title = webview.page_title().unwrap_or_default();
+        self.data.borrow_mut().record_visit(url.as_str(), &title);
         self.sync_history(&webview);
     }
 
@@ -721,11 +731,18 @@ fn main() -> Result<(), slint::PlatformError> {
     // M3 (ADR-0005): captura o device wgpu/Vulkan que o Slint cria (ver `capture_wgpu_device`).
     let wgpu_ctx = capture_wgpu_device(&app);
 
+    // M4 (ADR-0007): carrega o estado persistido (favoritos/histórico) do disco e loga a sessão salva.
+    // A restauração de abas a partir da sessão chega na T7; aqui já carregamos e logamos.
+    let app_data = load_persisted_state();
+
     let weak = app.as_weak();
     let runtime: Rc<RefCell<Option<Runtime>>> = Rc::new(RefCell::new(None));
+    // Clone p/ salvar a sessão ao sair (o original é movido para o closure do timer).
+    let exit_runtime = runtime.clone();
     let sink = Rc::new(Embedder {
         dirty: Cell::new(false),
         app: app.as_weak(),
+        data: app_data.clone(),
     });
     let logged = Rc::new(Cell::new(false));
     // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
@@ -804,5 +821,65 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
-    app.run()
+    // Evidência/teste automatizado: como a captura/fechamento de JANELA é bloqueada no GNOME 46/
+    // Wayland, `BASEDBROWSER_EXIT_AFTER_MS=<n>` encerra o loop de forma LIMPA após n ms — assim o
+    // caminho de save-on-exit (sessão) roda de verdade num smoke test não-interativo.
+    let _exit_timer = install_exit_timer();
+
+    let result = app.run();
+    // M4: ao sair, persiste a sessão (URL da aba atual). T2 ainda é 1 aba; T7 generaliza p/ N abas +
+    // restauração no start. O histórico já é gravado a cada visita.
+    save_session_on_exit(&exit_runtime);
+    result
+}
+
+/// Instala um timer single-shot que encerra o loop do Slint após `BASEDBROWSER_EXIT_AFTER_MS` ms, se
+/// a env estiver setada (exit LIMPO → roda o save-on-exit). `None`/no-op quando ausente ou inválida.
+/// O `Timer` retornado precisa ser mantido vivo pelo chamador. Fora do caminho normal de uso.
+fn install_exit_timer() -> Option<Timer> {
+    let ms: u64 = std::env::var("BASEDBROWSER_EXIT_AFTER_MS")
+        .ok()?
+        .parse()
+        .ok()?;
+    let timer = Timer::default();
+    timer.start(TimerMode::SingleShot, Duration::from_millis(ms), || {
+        eprintln!("[m4] BASEDBROWSER_EXIT_AFTER_MS atingido; encerrando o loop (exit limpo)");
+        let _ = slint::quit_event_loop();
+    });
+    Some(timer)
+}
+
+/// Carrega o estado persistido (favoritos/histórico) e loga o que encontrou (incl. a sessão salva,
+/// cuja restauração chega na T7). Devolve o estado vivo compartilhado com o `Embedder`.
+fn load_persisted_state() -> Rc<RefCell<persist::AppData>> {
+    let data = Rc::new(RefCell::new(persist::AppData::load()));
+    {
+        let d = data.borrow();
+        eprintln!(
+            "[m4] persistência: {} favorito(s), {} entrada(s) no histórico",
+            d.bookmarks.len(),
+            d.history.len()
+        );
+    }
+    if let Some(session) = persist::load_session() {
+        eprintln!(
+            "[m4] sessão salva encontrada: {} aba(s) (restauração chega na T7)",
+            session.tabs.len()
+        );
+    }
+    data
+}
+
+/// Salva a sessão de abas ao encerrar. T2: 1 aba (a URL atual da `WebView`); T7 passa a N abas + aba
+/// ativa. No-op se o runtime nunca subiu ou a aba não tem URL.
+fn save_session_on_exit(runtime: &Rc<RefCell<Option<Runtime>>>) {
+    if let Some(rt) = runtime.borrow().as_ref() {
+        if let Some(url) = rt.webview.url() {
+            persist::save_session(&persist::Session {
+                tabs: vec![url.to_string()],
+                active: 0,
+            });
+            eprintln!("[m4] sessão salva (1 aba)");
+        }
+    }
 }
