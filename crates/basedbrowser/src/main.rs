@@ -25,7 +25,7 @@ mod input;
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
-    DeviceIntRect, EventLoopWaker, OffscreenRenderingContext, RenderingContext, Servo,
+    DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext, RenderingContext, Servo,
     ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WindowRenderingContext,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
@@ -47,6 +47,7 @@ slint::slint! {
         in property <bool> loading;
         in property <bool> can-go-back;
         in property <bool> can-go-forward;
+        in property <string> window-title: "BasedBrowser";
 
         // Chrome -> Rust.
         callback load-url(string);
@@ -61,7 +62,7 @@ slint::slint! {
         callback forward-key(string, bool, bool, bool, bool, bool, bool);
         callback web-resized(physical-length, physical-length);
 
-        title: "BasedBrowser";
+        title: root.window-title;
         preferred-width: 1024px;
         preferred-height: 768px;
 
@@ -202,15 +203,58 @@ impl EventLoopWaker for PeriodicWaker {
     fn wake(&self) {}
 }
 
-/// Sink de frames: o `WebViewDelegate` marca "sujo" quando o Servo tem um frame novo; o `Timer` lê
-/// e limpa a flag antes de ler o FBO.
-struct FrameSink {
+/// `WebViewDelegate`: ponte do Servo para a UI. Marca "sujo" quando há frame novo (lido pelo `Timer`)
+/// e dirige o chrome (URL, carregamento, voltar/avançar, título) via um handle fraco da janela. Roda
+/// na main thread durante `spin_event_loop`; só toca o `app` e a `WebView` recebida (nunca o
+/// `RefCell` do runtime), então não há risco de borrow reentrante.
+struct Embedder {
     dirty: Cell<bool>,
+    app: slint::Weak<MainWindow>,
 }
 
-impl WebViewDelegate for FrameSink {
+impl Embedder {
+    /// Reflete `can_go_back`/`can_go_forward` da `WebView` nas propriedades do chrome.
+    fn sync_history(&self, webview: &WebView) {
+        if let Some(app) = self.app.upgrade() {
+            app.set_can_go_back(webview.can_go_back());
+            app.set_can_go_forward(webview.can_go_forward());
+        }
+    }
+}
+
+impl WebViewDelegate for Embedder {
     fn notify_new_frame_ready(&self, _webview: WebView) {
         self.dirty.set(true);
+    }
+
+    fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
+        if let Some(app) = self.app.upgrade() {
+            app.set_loading(status != LoadStatus::Complete);
+        }
+        self.sync_history(&webview);
+    }
+
+    fn notify_url_changed(&self, webview: WebView, url: Url) {
+        if let Some(app) = self.app.upgrade() {
+            app.set_page_url(url.to_string().into());
+        }
+        self.sync_history(&webview);
+    }
+
+    fn notify_history_changed(&self, webview: WebView, _entries: Vec<Url>, _current: usize) {
+        self.sync_history(&webview);
+    }
+
+    fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
+        if let Some(app) = self.app.upgrade() {
+            let title = title.unwrap_or_default();
+            let shown = if title.is_empty() {
+                "BasedBrowser".to_string()
+            } else {
+                format!("{title} — BasedBrowser")
+            };
+            app.set_window_title(shown.into());
+        }
     }
 }
 
@@ -226,7 +270,7 @@ struct Runtime {
 /// Cria o `Servo` + `WebView` renderizando num `OffscreenRenderingContext` (FBO de GL de hardware)
 /// derivado da janela do Slint. `show()` + `focus()` são necessários: sem `show()` a pipeline fica
 /// "fechada" e renderiza em branco.
-fn init_runtime(window: &slint::Window, sink: Rc<FrameSink>) -> Result<Runtime, String> {
+fn init_runtime(window: &slint::Window, sink: Rc<Embedder>) -> Result<Runtime, String> {
     let provider = window.window_handle();
     let display_handle = provider
         .display_handle()
@@ -263,6 +307,20 @@ fn init_runtime(window: &slint::Window, sink: Rc<FrameSink>) -> Result<Runtime, 
         context,
         _parent: parent,
     })
+}
+
+/// Interpreta o texto digitado na barra como `Url`. Se já é uma URL absoluta (tem esquema), usa
+/// como está; senão tenta prefixar `https://` (atalho de digitação tipo `exemplo.com`). Devolve
+/// `None` se nem assim virar uma URL válida.
+fn parse_user_url(input: &str) -> Option<Url> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(url) = Url::parse(trimmed) {
+        return Some(url);
+    }
+    Url::parse(&format!("https://{trimmed}")).ok()
 }
 
 /// Escreve a página de demo num arquivo temporário e devolve a URL `file://` correspondente.
@@ -323,6 +381,78 @@ fn pump_frame(runtime: &Runtime, weak: &slint::Weak<MainWindow>, logged: &Cell<b
     }
 }
 
+/// Registra os callbacks do chrome (Slint) que encaminham input e navegação à `WebView`. Cada
+/// handler captura um clone do runtime compartilhado; se o evento chegar antes do init lazy, o
+/// `if let Some` ignora com segurança. Borrows são curtos e os callbacks do Slint rodam
+/// serializados com o `Timer` na main thread (sem reentrância no `RefCell`).
+fn wire_chrome(app: &MainWindow, runtime: &Rc<RefCell<Option<Runtime>>>) {
+    let rt = runtime.clone();
+    app.on_forward_pointer(move |x, y, kind, button| {
+        if let Some(r) = rt.borrow().as_ref() {
+            r.webview
+                .notify_input_event(input::pointer_input_event(x, y, kind, button));
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_forward_scroll(move |x, y, dx, dy| {
+        if let Some(r) = rt.borrow().as_ref() {
+            r.webview
+                .notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_forward_key(move |text, pressed, ctrl, shift, alt, meta, repeat| {
+        if let Some(r) = rt.borrow().as_ref() {
+            r.webview.notify_input_event(input::key_input_event(
+                text.as_str(),
+                pressed,
+                ctrl,
+                shift,
+                alt,
+                meta,
+                repeat,
+            ));
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_load_url(move |text| {
+        if let Some(r) = rt.borrow().as_ref() {
+            match parse_user_url(text.as_str()) {
+                Some(url) => r.webview.load(url),
+                None => eprintln!("[m2] URL invalida ignorada: {text:?}"),
+            }
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_go_back(move || {
+        if let Some(r) = rt.borrow().as_ref() {
+            if r.webview.can_go_back() {
+                r.webview.go_back(1);
+            }
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_go_forward(move || {
+        if let Some(r) = rt.borrow().as_ref() {
+            if r.webview.can_go_forward() {
+                r.webview.go_forward(1);
+            }
+        }
+    });
+
+    let rt = runtime.clone();
+    app.on_reload(move || {
+        if let Some(r) = rt.borrow().as_ref() {
+            r.webview.reload();
+        }
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Provedor de cripto process-wide p/ TLS. `install_default` falha se já houver um — ignorável.
     if rustls::crypto::aws_lc_rs::default_provider()
@@ -340,48 +470,13 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let weak = app.as_weak();
     let runtime: Rc<RefCell<Option<Runtime>>> = Rc::new(RefCell::new(None));
-    let sink = Rc::new(FrameSink {
+    let sink = Rc::new(Embedder {
         dirty: Cell::new(false),
+        app: app.as_weak(),
     });
     let logged = Rc::new(Cell::new(false));
 
-    // Encaminha input do chrome (Slint) ao Servo. Os handlers tocam o runtime compartilhado; se o
-    // input chegar antes do init lazy, o `if let Some` ignora com segurança. Borrows curtos: os
-    // callbacks do Slint e o Timer rodam serializados na main thread (sem reentrância).
-    {
-        let rt = runtime.clone();
-        app.on_forward_pointer(move |x, y, kind, button| {
-            if let Some(r) = rt.borrow().as_ref() {
-                r.webview
-                    .notify_input_event(input::pointer_input_event(x, y, kind, button));
-            }
-        });
-    }
-    {
-        let rt = runtime.clone();
-        app.on_forward_scroll(move |x, y, dx, dy| {
-            if let Some(r) = rt.borrow().as_ref() {
-                r.webview
-                    .notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
-            }
-        });
-    }
-    {
-        let rt = runtime.clone();
-        app.on_forward_key(move |text, pressed, ctrl, shift, alt, meta, repeat| {
-            if let Some(r) = rt.borrow().as_ref() {
-                r.webview.notify_input_event(input::key_input_event(
-                    text.as_str(),
-                    pressed,
-                    ctrl,
-                    shift,
-                    alt,
-                    meta,
-                    repeat,
-                ));
-            }
-        });
-    }
+    wire_chrome(&app, &runtime);
 
     // Dirige o Servo e bombeia frames. O runtime é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
