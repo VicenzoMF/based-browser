@@ -9,3 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# UI / chrome (M1). `raw-window-handle-06` expõe Window::window_handle() (HasWindowHandle +
+# HasDisplayHandle) — necessário no T2 p/ alimentar o WindowRenderingContext do Servo.
+# Backend winit + renderer vêm por default. Ver .specs/project/ROADMAP.md (M1) e ADR-0003.
+slint = { version = "1.16", features = ["raw-window-handle-06"] }
