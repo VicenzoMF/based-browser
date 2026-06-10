@@ -1,0 +1,25 @@
+[package]
+name = "servo-poc"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false              # PoC de de-risking do M0; nunca publicar.
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pin exato do motor (ver docs/adr/0002-pin-servo-0.2.0.md). Default features do servo 0.2.0
+# = ["baked-in-resources", "clipboard", "js_jit"] — SEM media-gstreamer (não precisamos de
+# mídia p/ provar render de HTML/CSS). Recursos vêm embutidos no binário (baked-in-resources).
+servo = "=0.2.0"
+
+# Versões casadas com as que o servo 0.2.0 declara (workspace deps do tag v0.2.0),
+# para o raw-window-handle 0.6 / dpi 0.1 baterem com WindowRenderingContext::new.
+winit = "0.30"
+url = "2.5"
+euclid = "0.22"
+
+# Provedor de cripto p/ TLS (HTTPS). Mesmo provider que o exemplo do Servo usa.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }

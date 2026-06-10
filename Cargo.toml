@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/basedbrowser"]
+members = ["crates/basedbrowser", "crates/servo-poc"]
 
 [workspace.package]
 edition = "2021"
