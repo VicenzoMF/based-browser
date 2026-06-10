@@ -18,7 +18,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod input;
 
@@ -377,6 +377,18 @@ fn parse_user_url(input: &str) -> Option<Url> {
 /// Escreve as duas páginas de teste (cruzadas por link) em arquivos temporários e devolve a URL
 /// `file://` da inicial. Offline/determinístico (sem rede/TLS).
 fn home_page_url() -> Result<Url, String> {
+    // Override opcional da URL inicial (benchmark/teste reproduzível): aceita URL absoluta ou
+    // `file://...` (mesma normalização da barra). Ex.: `BASEDBROWSER_URL=file:///tmp/m3-bench.html`.
+    if let Some(raw) = std::env::var_os("BASEDBROWSER_URL") {
+        if let Some(url) = raw.to_str().and_then(parse_user_url) {
+            return Ok(url);
+        }
+        eprintln!(
+            "[m3] BASEDBROWSER_URL invalida, ignorando: {}",
+            raw.display()
+        );
+    }
+
     let dir = std::env::temp_dir();
     let start_path = dir.join("basedbrowser-start.html");
     let page2_path = dir.join("basedbrowser-page2.html");
@@ -540,6 +552,71 @@ fn wire_chrome(
     });
 }
 
+/// Telemetria do hot path de frame, habilitada por `BASEDBROWSER_BENCH=1` (no-op quando ausente).
+/// Mede o tempo de cada `pump_frame` — exatamente o custo que o M3 ataca — e reporta a cada ~1 s:
+/// taxa de frames bombeados, média/p95/máx do tempo de pump em ms. A métrica é a MESMA na cópia-CPU
+/// (M1/M2) e no caminho GPU (M3), então o "antes vs depois" é comparável (critério de sucesso do M3).
+struct FrameBench {
+    enabled: bool,
+    /// Tempos de pump (ms) acumulados desde o último relatório.
+    samples: Vec<f64>,
+    total_frames: u64,
+    last_report: Instant,
+}
+
+impl FrameBench {
+    fn new() -> Self {
+        let enabled = std::env::var_os("BASEDBROWSER_BENCH").is_some();
+        if enabled {
+            eprintln!("[bench] habilitado (BASEDBROWSER_BENCH) — medindo o tempo de pump_frame");
+        }
+        Self {
+            enabled,
+            samples: Vec::new(),
+            total_frames: 0,
+            last_report: Instant::now(),
+        }
+    }
+
+    /// Registra a duração de um `pump_frame` e emite um relatório a cada ~1 s.
+    fn record(&mut self, dur: Duration) {
+        if !self.enabled {
+            return;
+        }
+        self.total_frames += 1;
+        self.samples.push(dur.as_secs_f64() * 1000.0);
+        let window = self.last_report.elapsed();
+        if window >= Duration::from_secs(1) {
+            self.report(window);
+            self.samples.clear();
+            self.last_report = Instant::now();
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "telemetria: contagem/índice de percentil; perda de precisão/truncamento irrelevante"
+    )]
+    fn report(&self, window: Duration) {
+        let n = self.samples.len();
+        if n == 0 {
+            return;
+        }
+        let mut sorted = self.samples.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mean = self.samples.iter().sum::<f64>() / n as f64;
+        let p95 = sorted[(((n - 1) as f64) * 0.95).round() as usize];
+        let max = sorted[n - 1];
+        let fps = n as f64 / window.as_secs_f64();
+        eprintln!(
+            "[bench] pump={fps:.1}/s total={} pump_ms(mean={mean:.2} p95={p95:.2} max={max:.2})",
+            self.total_frames
+        );
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Provedor de cripto process-wide p/ TLS. `install_default` falha se já houver um — ignorável.
     if rustls::crypto::aws_lc_rs::default_provider()
@@ -588,6 +665,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_logged = logged;
     let tick_web_size = web_size;
     let init_ticks = Cell::new(0u32);
+    let tick_bench = RefCell::new(FrameBench::new());
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         if tick_runtime.borrow().is_none() {
             let n = init_ticks.get();
@@ -619,7 +697,9 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         rt.servo.spin_event_loop();
         if tick_sink.dirty.replace(false) {
+            let started = Instant::now();
             pump_frame(rt, &tick_weak, &tick_logged);
+            tick_bench.borrow_mut().record(started.elapsed());
         }
     });
 
