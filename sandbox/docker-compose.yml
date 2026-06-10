@@ -1,0 +1,24 @@
+# Sandbox para rodar o BasedBrowser sobre conteudo web NAO confiavel.
+# Ver HARNESS-ROADMAP (H3) e o guia de seguranca [D]: "deny outbound by default".
+#
+# STATUS: SKELETON. So passa a ser usado de fato a partir do M1 (quando houver um
+# binario que renderiza). Hoje serve de molde do isolamento.
+#
+# Principios aplicados (doc [D]):
+#  - network_mode: none  -> sem egress; processo comprometido nao "telefona pra casa"
+#  - cap_drop: ALL + no-new-privileges -> blast radius minimo
+#  - user nao-root + read_only + tmpfs  -> superficie reduzida
+services:
+  browser-sandbox:
+    image: rust:1-slim-bookworm
+    network_mode: "none"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp"]
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace:ro
+    # command: cargo run -p basedbrowser -- <url-nao-confiavel>   # (M1+)
+    command: ["bash", "-lc", "echo 'sandbox skeleton OK (sem egress)'; id"]

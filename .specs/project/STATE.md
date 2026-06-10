@@ -1,7 +1,7 @@
 # State
 
 **Last Updated:** 2026-06-10
-**Current Work:** harness **H1 fundação concluída e verde** (lints/hooks/settings deny/ADR-0001). Próximo: **M0** (receita de build do Servo) + finalizar H1 (prune de MCP, instalar lefthook).
+**Current Work:** harness **H1–H4 (toda a infra independente do produto) construída e verde** — hooks PreToolUse (protect-config/safety-bash) + Stop (gate-build) + SessionStart, lefthook instalado, sandbox skeleton, template de métricas. Pendente humano: prune de MCP (`/mcp`) + autorizar AgentShield. **Próximo: M0** (receita de build do Servo).
 
 ---
 
@@ -59,6 +59,13 @@ _Nenhum no momento._
 **Solution:** Manter o código de embedding o mais fino possível e fixar uma revisão do Servo; fazer sprints de atualização periódicos e deliberados.
 **Prevents:** Que o projeto morra afogado em churn de upstream.
 
+### L-002: Sandbox barrou o AgentShield (pacote npm vindo de doc indexado) (2026-06-10)
+
+**Context:** tentei rodar `npx ecc-agentshield scan` (cherry-pick do ECC) para escanear nossa config do harness.
+**Problem:** o classificador do Claude Code negou — o nome do pacote veio de conteúdo do Pageboy (não confiável), não do usuário = execução de código externo não nomeada pelo usuário.
+**Solution:** não contornar; rodar pacote de terceiros vindo de doc indexado precisa de autorização explícita do usuário (`! npx ...` ou permission rule).
+**Prevents:** exatamente o threat model do doc [D] (supply-chain / "tudo que o LLM lê é contexto executável"). O ambiente validou o próprio princípio de segurança do harness.
+
 ---
 
 ## Quick Tasks Completed
@@ -72,6 +79,10 @@ _Nenhum no momento._
 
 - [ ] Medição sistemática de RAM vs. Chromium para validar a tese central — Captured during: project init
 - [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
+- [ ] Render-diff / "olhos" E2E — destrava no M1 — Captured during: harness H2
+- [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
+- [ ] Custom lints com fix-instructions — adicionar quando o agente errar (princípio doc [A]) — Captured during: harness H3
+- [ ] Ativar a sandbox `sandbox/docker-compose.yml` (rodar browser sobre URL não confiável) — M1 — Captured during: harness H3
 
 ---
 
@@ -83,7 +94,9 @@ _Nenhum no momento._
 - [x] H1: AGENTS.md+CLAUDE.md ponteiro, lints Cargo.toml, hook PostToolUse rustfmt, settings.json deny — feito e verde (clippy/fmt/build)
 - [x] H1: profundidade do ECC decidida — principle-first + cherry-pick (AD-005)
 - [ ] H1: prune de MCPs ativos (manter ~context7+pageboy) para <10 MCPs/<80 tools — harness (precisa do usuário, via /mcp)
-- [ ] H1: instalar lefthook (`lefthook install`) p/ ativar o gate de pre-commit — harness
+- [x] H1: instalar lefthook — feito (v2.1.9, `lefthook install` sincronizado)
+- [ ] Autorizar/rodar AgentShield (`npx ecc-agentshield scan`) — bloqueado pelo sandbox (pacote vindo de doc; ver L-002) — decisão do usuário
+- [x] H2–H4 infra: hooks PreToolUse/Stop/SessionStart, sandbox skeleton, template de métricas — feito e testado
 
 ---
 
