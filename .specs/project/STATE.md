@@ -1,7 +1,7 @@
 # State
 
 **Last Updated:** 2026-06-10
-**Current Work:** **Marco M1 CONCLUÍDO** ✅ — o **Slint hospeda o Servo**: `crates/basedbrowser` (Slint 1.16.1 + `servo` 0.2.0) exibe, numa janela Slint, uma página HTML/CSS renderizada pelo Servo via **cópia-CPU** (URL fixa `file://`). Pipeline: Servo `OffscreenRenderingContext` (FBO GL hardware, do handle da janela do Slint) → `read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`, bombeado por `slint::Timer`. **Evidência confirmada pelo usuário** (janela com heading+gradiente+flexbox; `/tmp/m1-window.png`, `/tmp/m1-servo-frame.png`). Decisão/arquitetura em **ADR-0003**; lição-chave em **L-004** (lazy-init evita corromper o GL). **Próximo: M2** (input + chrome mínimo → browser navegável). Pendentes humanos (harness, não bloqueiam M2): prune de MCP (`/mcp`); autorizar AgentShield; reavaliar escopo dos feedback-hooks agora que `basedbrowser` puxa o `servo` (ver Todos).
+**Current Work:** **Marco M1 CONCLUÍDO** ✅ — o **Slint hospeda o Servo**: `crates/basedbrowser` (Slint 1.16.1 + `servo` 0.2.0) exibe, numa janela Slint, uma página HTML/CSS renderizada pelo Servo via **cópia-CPU** (URL fixa `file://`). Pipeline: Servo `OffscreenRenderingContext` (FBO GL hardware, do handle da janela do Slint) → `read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`, bombeado por `slint::Timer`. **Evidência confirmada pelo usuário** (janela com heading+gradiente+flexbox; `/tmp/m1-window.png`, `/tmp/m1-servo-frame.png`). Decisão/arquitetura em **ADR-0003**; lição-chave em **L-004** (lazy-init evita corromper o GL). **Próximo: M2** (input + chrome mínimo → browser navegável). Harness: prune de MCP ✅ (pencil removido) e re-escopo dos feedback-hooks ✅ (guard de build fria) — feitos em 2026-06-10. Pendente humano restante (não bloqueia M2): autorizar AgentShield (`npx ecc-agentshield`, L-002).
 
 ---
 
@@ -121,11 +121,11 @@ _Nenhum no momento._
 - [x] Verificar se Servo exige toolchain Rust fixado — M0 (Servo agora é **stable**; v0.2.0 pede `1.92.0`, fixado no rust-toolchain.toml)
 - [x] H1: AGENTS.md+CLAUDE.md ponteiro, lints Cargo.toml, hook PostToolUse rustfmt, settings.json deny — feito e verde (clippy/fmt/build)
 - [x] H1: profundidade do ECC decidida — principle-first + cherry-pick (AD-005)
-- [ ] H1: prune de MCPs ativos (manter ~context7+pageboy) para <10 MCPs/<80 tools — harness (precisa do usuário, via /mcp)
+- [x] H1: prune de MCPs ativos — feito (2026-06-10, autorizado pelo usuário): removido `pencil` (escopo user, editor de design irrelevante) via `claude mcp remove`; mantidos `context7` (global) + `pageboy` (projeto). Conectores globais claude.ai (Figma/Gmail/ClickUp/Calendar/Drive) + plugin medusa-dev NÃO removidos (toolkit cross-projeto do usuário; não carregam nesta sessão)
 - [x] H1: instalar lefthook — feito (v2.1.9, `lefthook install` sincronizado)
 - [ ] Autorizar/rodar AgentShield (`npx ecc-agentshield scan`) — bloqueado pelo sandbox (pacote vindo de doc; ver L-002) — decisão do usuário
 - [x] H2–H4 infra: hooks PreToolUse/Stop/SessionStart, sandbox skeleton, template de métricas — feito e testado
-- [ ] **Reavaliar escopo dos feedback-hooks** agora que `basedbrowser` puxa o `servo` — M2 (humano, L-003): hoje `gate-build.sh` e `lefthook.yml` usam `--exclude servo-poc`; o cache aquecido mantém os checks rápidos (clippy do basedbrowser ~0.7s), mas a 1ª build fria recompila o motor. Se virar atrito, aplicar `--exclude basedbrowser` (decisão humana).
+- [x] **Reavaliar escopo dos feedback-hooks** agora que `basedbrowser` puxa o `servo` — feito (2026-06-10, autorizado pelo usuário): avaliação concluiu que o motor é **dep cacheada** (não recompila por check; clippy ~0.7s com cache quente), então `basedbrowser` SEGUE coberto pelo gate (não excluído). Adicionado **guard de build fria** no `gate-build.sh` (pula a build se o `libservo-*.rlib` ainda não existe, evitando estourar o timeout de 120s do Stop); comentários dos hooks atualizados. `--exclude servo-poc` mantido (PoC descartável).
 - [x] M1: primeiros pixels Slint↔Servo (cópia-CPU) — feito (ADR-0003, L-004); evidência confirmada pelo usuário
 
 ---
