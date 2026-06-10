@@ -20,6 +20,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+mod input;
+
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
@@ -342,6 +344,28 @@ fn main() -> Result<(), slint::PlatformError> {
         dirty: Cell::new(false),
     });
     let logged = Rc::new(Cell::new(false));
+
+    // Encaminha input do chrome (Slint) ao Servo. Os handlers tocam o runtime compartilhado; se o
+    // input chegar antes do init lazy, o `if let Some` ignora com segurança. Borrows curtos: os
+    // callbacks do Slint e o Timer rodam serializados na main thread (sem reentrância).
+    {
+        let rt = runtime.clone();
+        app.on_forward_pointer(move |x, y, kind, button| {
+            if let Some(r) = rt.borrow().as_ref() {
+                r.webview
+                    .notify_input_event(input::pointer_input_event(x, y, kind, button));
+            }
+        });
+    }
+    {
+        let rt = runtime.clone();
+        app.on_forward_scroll(move |x, y, dx, dy| {
+            if let Some(r) = rt.borrow().as_ref() {
+                r.webview
+                    .notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
+            }
+        });
+    }
 
     // Dirige o Servo e bombeia frames. O runtime é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
