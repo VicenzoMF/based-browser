@@ -366,6 +366,22 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+    {
+        let rt = runtime.clone();
+        app.on_forward_key(move |text, pressed, ctrl, shift, alt, meta, repeat| {
+            if let Some(r) = rt.borrow().as_ref() {
+                r.webview.notify_input_event(input::key_input_event(
+                    text.as_str(),
+                    pressed,
+                    ctrl,
+                    shift,
+                    alt,
+                    meta,
+                    repeat,
+                ));
+            }
+        });
+    }
 
     // Dirige o Servo e bombeia frames. O runtime é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do

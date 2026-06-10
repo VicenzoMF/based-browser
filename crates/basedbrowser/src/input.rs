@@ -7,9 +7,12 @@
 //! web e a `Image` usa `image-fit: fill`, o mapeamento é identidade (ver doc do módulo em `main.rs`).
 
 use servo::{
-    DevicePoint, DeviceVector2D, InputEvent, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseMoveEvent, Scroll, WebViewPoint,
+    Code, DevicePoint, DeviceVector2D, InputEvent, Key, KeyState, KeyboardEvent, Location,
+    Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent, NamedKey, Scroll,
+    WebViewPoint,
 };
+use slint::platform::Key as SlintKey;
+use slint::SharedString;
 
 /// Constrói o `WebViewPoint` (em device pixels) usado como âncora de pointer/scroll.
 pub fn device_point(x: f32, y: f32) -> WebViewPoint {
@@ -51,4 +54,99 @@ fn mouse_button(button: i32) -> MouseButton {
 #[must_use]
 pub fn scroll_delta(delta_x: f32, delta_y: f32) -> Scroll {
     Scroll::Delta(DeviceVector2D::new(-delta_x, -delta_y).into())
+}
+
+/// Traduz um evento de teclado do Slint para `InputEvent::Keyboard` do Servo. `text` é o campo do
+/// `KeyEvent` do Slint (teclas especiais vêm como chars de uso-privado; ver [`key_from_text`]).
+/// O `Code` físico não é exposto pelo Slint, então usamos `Code::Unidentified` (como o exemplo).
+#[must_use]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "espelho 1:1 do KeyEvent do Slint"
+)]
+pub fn key_input_event(
+    text: &str,
+    pressed: bool,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+    repeat: bool,
+) -> InputEvent {
+    let state = if pressed {
+        KeyState::Down
+    } else {
+        KeyState::Up
+    };
+    let key = key_from_text(text);
+    let mut modifiers = Modifiers::empty();
+    modifiers.set(Modifiers::CONTROL, ctrl);
+    modifiers.set(Modifiers::SHIFT, shift);
+    modifiers.set(Modifiers::ALT, alt);
+    modifiers.set(Modifiers::META, meta);
+    InputEvent::Keyboard(KeyboardEvent::new_without_event(
+        state,
+        key,
+        Code::Unidentified,
+        Location::Standard,
+        modifiers,
+        repeat,
+        false,
+    ))
+}
+
+/// Mapeia o `text` do `KeyEvent` do Slint para uma `Key` do Servo (`keyboard_types`). Teclas
+/// especiais do Slint (`slint::platform::Key`) convertem para um char de uso-privado em `text`;
+/// comparamos contra ele e devolvemos o `NamedKey` correspondente. Texto de 1 char vira
+/// `Key::Character`. Porte do `key_event_util` do exemplo oficial.
+fn key_from_text(text: &str) -> Key {
+    macro_rules! named {
+        ($slint_key:expr, $named:expr) => {
+            if text == SharedString::from($slint_key).as_str() {
+                return Key::Named($named);
+            }
+        };
+    }
+
+    named!(SlintKey::Backspace, NamedKey::Backspace);
+    named!(SlintKey::Tab, NamedKey::Tab);
+    named!(SlintKey::Return, NamedKey::Enter);
+    named!(SlintKey::Escape, NamedKey::Escape);
+    named!(SlintKey::Delete, NamedKey::Delete);
+    named!(SlintKey::Shift, NamedKey::Shift);
+    named!(SlintKey::ShiftR, NamedKey::Shift);
+    named!(SlintKey::Control, NamedKey::Control);
+    named!(SlintKey::ControlR, NamedKey::Control);
+    named!(SlintKey::Alt, NamedKey::Alt);
+    named!(SlintKey::AltGr, NamedKey::AltGraph);
+    named!(SlintKey::Meta, NamedKey::Meta);
+    named!(SlintKey::MetaR, NamedKey::Meta);
+    named!(SlintKey::UpArrow, NamedKey::ArrowUp);
+    named!(SlintKey::DownArrow, NamedKey::ArrowDown);
+    named!(SlintKey::LeftArrow, NamedKey::ArrowLeft);
+    named!(SlintKey::RightArrow, NamedKey::ArrowRight);
+    named!(SlintKey::Home, NamedKey::Home);
+    named!(SlintKey::End, NamedKey::End);
+    named!(SlintKey::Insert, NamedKey::Insert);
+    named!(SlintKey::PageUp, NamedKey::PageUp);
+    named!(SlintKey::PageDown, NamedKey::PageDown);
+    named!(SlintKey::Pause, NamedKey::Pause);
+    named!(SlintKey::ScrollLock, NamedKey::ScrollLock);
+    named!(SlintKey::F1, NamedKey::F1);
+    named!(SlintKey::F2, NamedKey::F2);
+    named!(SlintKey::F3, NamedKey::F3);
+    named!(SlintKey::F4, NamedKey::F4);
+    named!(SlintKey::F5, NamedKey::F5);
+    named!(SlintKey::F6, NamedKey::F6);
+    named!(SlintKey::F7, NamedKey::F7);
+    named!(SlintKey::F8, NamedKey::F8);
+    named!(SlintKey::F9, NamedKey::F9);
+    named!(SlintKey::F10, NamedKey::F10);
+    named!(SlintKey::F11, NamedKey::F11);
+    named!(SlintKey::F12, NamedKey::F12);
+
+    if text.chars().count() == 1 {
+        return Key::Character(text.to_string());
+    }
+    Key::Named(NamedKey::Unidentified)
 }
