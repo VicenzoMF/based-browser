@@ -18,6 +18,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod gpu_bridge;
@@ -224,16 +226,28 @@ const PAGE2_HTML: &str = r#"<!doctype html>
 /// estabilizar e evitar a colisão de GL no init (ver lição no doc do módulo / ADR-0003).
 const INIT_DELAY_TICKS: u32 = 8;
 
-/// `EventLoopWaker` mínimo: o `Timer` de ~16 ms já dirige o `spin_event_loop` continuamente, então
-/// o M1 não precisa que o `wake()` agende trabalho (otimização do waker fica para o M2).
-#[derive(Clone)]
-struct PeriodicWaker;
+/// Quantos ticks (~16 ms) sem atividade antes de o loop entrar em baixa frequência (≈0,5 s).
+const IDLE_ACTIVE_TICKS: u32 = 30;
+/// Em baixa frequência (ocioso), spina o Servo 1 a cada N ticks (~10 Hz em vez de ~60 Hz).
+const IDLE_SPIN_EVERY: u32 = 6;
 
-impl EventLoopWaker for PeriodicWaker {
+/// `EventLoopWaker` real (M3/T6): o Servo chama `wake()` — de qualquer thread — quando tem trabalho
+/// a fazer (frame novo, rede, timers da página). Em vez de o `Timer` spinar `spin_event_loop`
+/// incondicionalmente a ~60 Hz (CPU ocioso), o waker marca `pending`; o loop spina a 60 Hz enquanto
+/// há atividade e cai p/ ~10 Hz quando ocioso, voltando a 60 Hz IMEDIATAMENTE ao ser acordado (ou ao
+/// receber input). `Send`+`Sync` via `Arc<AtomicBool>` (o Servo o usa em múltiplas threads).
+#[derive(Clone)]
+struct ServoWaker {
+    pending: Arc<AtomicBool>,
+}
+
+impl EventLoopWaker for ServoWaker {
     fn clone_box(&self) -> Box<dyn EventLoopWaker> {
         Box::new(self.clone())
     }
-    fn wake(&self) {}
+    fn wake(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
 }
 
 /// `WebViewDelegate`: ponte do Servo para a UI. Marca "sujo" quando há frame novo (lido pelo `Timer`)
@@ -316,6 +330,9 @@ struct Runtime {
     gl_loaded: Cell<bool>,
     /// Interop GPU desabilitado p/ esta sessão (fallback permanente p/ cópia-CPU).
     gpu_disabled: Cell<bool>,
+    /// Flag do waker real (T6): o `ServoWaker` marca `true` quando o Servo tem trabalho; o loop o lê
+    /// p/ spinar sob demanda (e os handlers de input o marcam p/ responsividade imediata).
+    pending: Arc<AtomicBool>,
 }
 
 /// Cria o `Servo` + `WebView` renderizando num `OffscreenRenderingContext` (FBO de GL de hardware)
@@ -348,8 +365,12 @@ fn init_runtime(
     );
     let context = Rc::new(parent.offscreen_context(web_physical));
 
+    // Waker real (T6): começa `true` p/ o 1º tick pós-init já spinar e carregar a página.
+    let pending = Arc::new(AtomicBool::new(true));
     let servo = ServoBuilder::default()
-        .event_loop_waker(Box::new(PeriodicWaker))
+        .event_loop_waker(Box::new(ServoWaker {
+            pending: pending.clone(),
+        }))
         .build();
     servo.setup_logging();
 
@@ -370,6 +391,7 @@ fn init_runtime(
         bridge: RefCell::new(None),
         gl_loaded: Cell::new(false),
         gpu_disabled: Cell::new(false),
+        pending,
     })
 }
 
@@ -604,6 +626,7 @@ fn wire_chrome(
             r.webview.resize(size);
             // M3 (ADR-0005): a ponte GPU é dimensionada ao offscreen; `pump_frame_gpu` detecta a
             // mudança de tamanho e a recria (com o contexto do Servo corrente — ver lá).
+            wake_servo(r);
         }
     });
 
@@ -612,6 +635,7 @@ fn wire_chrome(
         if let Some(r) = rt.borrow().as_ref() {
             r.webview
                 .notify_input_event(input::pointer_input_event(x, y, kind, button));
+            wake_servo(r);
         }
     });
 
@@ -620,6 +644,7 @@ fn wire_chrome(
         if let Some(r) = rt.borrow().as_ref() {
             r.webview
                 .notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
+            wake_servo(r);
         }
     });
 
@@ -635,6 +660,7 @@ fn wire_chrome(
                 meta,
                 repeat,
             ));
+            wake_servo(r);
         }
     });
 
@@ -645,6 +671,7 @@ fn wire_chrome(
                 Some(url) => r.webview.load(url),
                 None => eprintln!("[m2] URL invalida ignorada: {text:?}"),
             }
+            wake_servo(r);
         }
     });
 
@@ -654,6 +681,7 @@ fn wire_chrome(
             if r.webview.can_go_back() {
                 r.webview.go_back(1);
             }
+            wake_servo(r);
         }
     });
 
@@ -663,6 +691,7 @@ fn wire_chrome(
             if r.webview.can_go_forward() {
                 r.webview.go_forward(1);
             }
+            wake_servo(r);
         }
     });
 
@@ -670,8 +699,15 @@ fn wire_chrome(
     app.on_reload(move || {
         if let Some(r) = rt.borrow().as_ref() {
             r.webview.reload();
+            wake_servo(r);
         }
     });
+}
+
+/// Marca o `pending` do waker (T6): força o loop a spinar no próximo tick (60 Hz), p/ a ação do
+/// usuário (input/navegação/resize) ser processada imediatamente mesmo se o loop estava ocioso.
+fn wake_servo(runtime: &Runtime) {
+    runtime.pending.store(true, Ordering::Release);
 }
 
 /// Telemetria do hot path de frame, habilitada por `BASEDBROWSER_BENCH=1` (no-op quando ausente).
@@ -823,6 +859,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_web_size = web_size;
     let tick_wgpu = wgpu_ctx;
     let init_ticks = Cell::new(0u32);
+    let idle_ticks = Cell::new(0u32);
     let tick_bench = RefCell::new(FrameBench::new());
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         if tick_runtime.borrow().is_none() {
@@ -855,15 +892,30 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(rt) = guard.as_ref() else {
             return;
         };
+        // Waker real (T6): spina a ~60 Hz enquanto há atividade; após `IDLE_ACTIVE_TICKS` ocioso,
+        // cai p/ ~10 Hz (spina 1 a cada `IDLE_SPIN_EVERY`), economizando o `spin_event_loop` ocioso.
+        // O `wake()` do Servo e os handlers de input marcam `pending` → volta a 60 Hz no próximo tick.
+        let woken = rt.pending.swap(false, Ordering::AcqRel);
+        let idle = idle_ticks.get();
+        if !woken && idle >= IDLE_ACTIVE_TICKS && !idle.is_multiple_of(IDLE_SPIN_EVERY) {
+            idle_ticks.set(idle.saturating_add(1));
+            return;
+        }
         if rt.context.make_current().is_err() {
             return;
         }
         rt.servo.spin_event_loop();
-        if tick_sink.dirty.replace(false) {
+        let produced = tick_sink.dirty.replace(false);
+        if produced {
             let started = Instant::now();
             pump_frame(rt, &tick_weak, &tick_logged);
             tick_bench.borrow_mut().record(started.elapsed());
         }
+        idle_ticks.set(if woken || produced {
+            0
+        } else {
+            idle.saturating_add(1)
+        });
     });
 
     app.run()
