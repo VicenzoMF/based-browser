@@ -7,6 +7,7 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --all --check
     clippy:
-      # [tailoring] Quando o Servo virar dependência, escopar este comando aos crates
-      # do app (ex.: -p basedbrowser) para NÃO recompilar o motor a cada commit.
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      # [tailoring] servo-poc puxa o motor Servo (build de vários GB). Excluímos ele do
+      # clippy de pre-commit para NÃO recompilar o motor a cada commit; servo-poc é
+      # verificado deliberadamente (build manual/CI). Ver docs/adr/0002 + HARNESS-ROADMAP H1.
+      run: cargo clippy --workspace --exclude servo-poc --all-targets -- -D warnings
