@@ -153,37 +153,68 @@ slint::slint! {
     }
 }
 
-/// Página de demonstração do M1 (HTML/CSS auto-contido). Carregada via `file://` para um render
-/// determinístico e offline (sem rede/TLS).
-const M1_PAGE_HTML: &str = r#"<!doctype html>
+/// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
+/// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
+/// teclado) e um link para a 2ª página (testa clique -> navegação -> voltar). O token
+/// `__PAGE2_URL__` é trocado pela URL real da 2ª página em [`home_page_url`].
+const START_HTML: &str = r#"<!doctype html>
 <html lang="pt-br"><head><meta charset="utf-8"><style>
   * { margin: 0; box-sizing: border-box; }
-  html, body { height: 100%; }
   body {
-    font-family: system-ui, sans-serif; color: #f5f7ff;
+    font-family: system-ui, sans-serif; color: #f5f7ff; padding: 48px;
     background: linear-gradient(135deg, #1e2030 0%, #3a2d5c 50%, #5c2d4d 100%);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
   }
-  h1 { font-size: 56px; letter-spacing: -1px; }
+  h1 { font-size: 52px; letter-spacing: -1px; }
   h1 span { color: #ff7eb6; }
-  p { font-size: 20px; opacity: .85; }
-  .row { display: flex; gap: 18px; }
-  .card {
-    width: 150px; height: 110px; border-radius: 16px; padding: 18px;
+  p { font-size: 19px; opacity: .85; margin-top: 12px; max-width: 760px; }
+  .panel {
+    margin-top: 28px; padding: 22px; border-radius: 16px; max-width: 760px;
     background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18);
-    display: flex; align-items: flex-end; font-weight: 600;
   }
-  .a { background: rgba(255,126,182,.22); }
-  .b { background: rgba(126,203,255,.22); }
-  .c { background: rgba(140,255,180,.22); }
+  label { display: block; font-weight: 600; margin-bottom: 8px; }
+  input {
+    width: 100%; padding: 12px 14px; font-size: 16px; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.3); background: rgba(0,0,0,.25); color: #fff;
+  }
+  a.nav {
+    display: inline-block; margin-top: 22px; padding: 12px 18px; border-radius: 10px;
+    background: #ff7eb6; color: #1e2030; font-weight: 700; text-decoration: none;
+  }
+  .spacer { height: 900px; }
+  .end { font-size: 22px; font-weight: 700; color: #8cffb4; }
 </style></head><body>
-  <h1>Based<span>Browser</span></h1>
-  <p>Servo renderizando dentro de uma janela Slint — Marco M1 (cópia-CPU)</p>
-  <div class="row">
-    <div class="card a">flexbox</div>
-    <div class="card b">gradiente</div>
-    <div class="card c">CSS</div>
+  <h1>Based<span>Browser</span> — M2</h1>
+  <p>Browser navegável: digite uma URL na barra e tecle Enter; clique/role/digite nesta
+     página; use voltar/avancar/recarregar. Esta pagina e rolavel (role ate o fim).</p>
+  <div class="panel">
+    <label for="t">Teste de teclado — clique e digite aqui:</label>
+    <input id="t" type="text" placeholder="o texto digitado deve aparecer">
   </div>
+  <a class="nav" href="__PAGE2_URL__">Ir para a Pagina 2 (testar clique + navegacao)</a>
+  <div class="spacer"></div>
+  <p class="end">Fim da pagina — se voce leu isto rolando, o scroll funciona.</p>
+</body></html>
+"#;
+
+/// 2ª página do harness de teste (alvo do link da inicial). `__START_URL__` -> URL da inicial.
+const PAGE2_HTML: &str = r#"<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8"><style>
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    font-family: system-ui, sans-serif; color: #1e2030; padding: 48px;
+    background: linear-gradient(135deg, #8cffb4 0%, #7ecbff 100%);
+  }
+  h1 { font-size: 52px; }
+  p { font-size: 19px; margin-top: 12px; max-width: 760px; }
+  a.nav {
+    display: inline-block; margin-top: 22px; padding: 12px 18px; border-radius: 10px;
+    background: #1e2030; color: #fff; font-weight: 700; text-decoration: none;
+  }
+</style></head><body>
+  <h1>Pagina 2</h1>
+  <p>Voce navegou via clique num link. Agora teste o botao voltar do chrome
+     (deve ficar habilitado) e o recarregar.</p>
+  <a class="nav" href="__START_URL__">Voltar para a inicial (ou use o botao voltar)</a>
 </body></html>
 "#;
 
@@ -302,7 +333,7 @@ fn init_runtime(
     servo.setup_logging();
 
     let webview = WebViewBuilder::new(&servo, context.clone())
-        .url(fixed_page_url()?)
+        .url(home_page_url()?)
         .hidpi_scale_factor(Scale::new(window.scale_factor()))
         .delegate(sink)
         .build();
@@ -343,11 +374,28 @@ fn parse_user_url(input: &str) -> Option<Url> {
     Url::parse(&format!("https://{trimmed}")).ok()
 }
 
-/// Escreve a página de demo num arquivo temporário e devolve a URL `file://` correspondente.
-fn fixed_page_url() -> Result<Url, String> {
-    let path = std::env::temp_dir().join("basedbrowser-m1.html");
-    std::fs::write(&path, M1_PAGE_HTML).map_err(|e| format!("escrever HTML de demo: {e}"))?;
-    Url::from_file_path(&path).map_err(|()| "Url::from_file_path falhou".to_string())
+/// Escreve as duas páginas de teste (cruzadas por link) em arquivos temporários e devolve a URL
+/// `file://` da inicial. Offline/determinístico (sem rede/TLS).
+fn home_page_url() -> Result<Url, String> {
+    let dir = std::env::temp_dir();
+    let start_path = dir.join("basedbrowser-start.html");
+    let page2_path = dir.join("basedbrowser-page2.html");
+    let start_url = Url::from_file_path(&start_path)
+        .map_err(|()| "Url::from_file_path (start) falhou".to_string())?;
+    let page2_url = Url::from_file_path(&page2_path)
+        .map_err(|()| "Url::from_file_path (page2) falhou".to_string())?;
+
+    std::fs::write(
+        &start_path,
+        START_HTML.replace("__PAGE2_URL__", page2_url.as_str()),
+    )
+    .map_err(|e| format!("escrever HTML inicial: {e}"))?;
+    std::fs::write(
+        &page2_path,
+        PAGE2_HTML.replace("__START_URL__", start_url.as_str()),
+    )
+    .map_err(|e| format!("escrever HTML pagina 2: {e}"))?;
+    Ok(start_url)
 }
 
 /// Frame inicial (cor sólida) antes do Servo produzir o primeiro frame.
@@ -503,7 +551,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let app = MainWindow::new()?;
     app.set_frame(placeholder_frame(1024, 768));
-    if let Ok(url) = fixed_page_url() {
+    if let Ok(url) = home_page_url() {
         app.set_page_url(url.to_string().into());
     }
 

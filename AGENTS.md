@@ -24,5 +24,7 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
-Marco **M1 ✅** — Slint hospeda o Servo: `crates/basedbrowser` exibe página do Servo numa janela
-Slint via cópia-CPU (ADR-0003, L-004). Próximo: **M2** (input + chrome navegável). Harness **H1** ok.
+Marco **M2 ✅** — browser navegável: `crates/basedbrowser` tem input (pointer/scroll/teclado →
+Servo), chrome (URL + voltar/avançar/recarregar + loading) e resize dinâmico, sobre a cópia-CPU do
+M1 (ADR-0004, AD-008, L-005). Próximo: **M3** (render GPU / texture sharing — elimina a cópia-CPU).
+Harness **H1** ok.

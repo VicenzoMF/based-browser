@@ -1,7 +1,7 @@
 # State
 
 **Last Updated:** 2026-06-10
-**Current Work:** **Marco M1 CONCLUÍDO** ✅ — o **Slint hospeda o Servo**: `crates/basedbrowser` (Slint 1.16.1 + `servo` 0.2.0) exibe, numa janela Slint, uma página HTML/CSS renderizada pelo Servo via **cópia-CPU** (URL fixa `file://`). Pipeline: Servo `OffscreenRenderingContext` (FBO GL hardware, do handle da janela do Slint) → `read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`, bombeado por `slint::Timer`. **Evidência confirmada pelo usuário** (janela com heading+gradiente+flexbox; `/tmp/m1-window.png`, `/tmp/m1-servo-frame.png`). Decisão/arquitetura em **ADR-0003**; lição-chave em **L-004** (lazy-init evita corromper o GL). **Próximo: M2** (input + chrome mínimo → browser navegável). Harness (2026-06-10, autorizado pelo usuário): prune de MCP ✅ (pencil removido; plugin medusa-dev desinstalado, rust-analyzer-lsp mantido); re-escopo dos feedback-hooks ✅ (guard de build fria); AgentShield rodado ✅ (Grade **B 83/100**). Pendências que dependem do usuário (não bloqueiam M2): conectores globais claude.ai (Figma/Gmail/ClickUp/Calendar/Drive) só desconectam na web claude.ai (não via CLI); 2 deny rules sugeridas pelo AgentShield no `settings.json` (edição da máquina de permissões — precisa de OK explícito).
+**Current Work:** **Marco M2 CONCLUÍDO** ✅ — **browser navegável**: `crates/basedbrowser` evoluiu o pipeline cópia-CPU do M1 com **input** (pointer/scroll/teclado → Servo via `src/input.rs`), **chrome mínimo** (barra de URL + voltar/avançar/recarregar + indicador de carregamento + título dinâmico, dirigidos pelo `WebViewDelegate` `Embedder`) e **resize dinâmico** (só o `OffscreenRenderingContext` via `webview.resize`; o `WindowRenderingContext` pai NÃO é tocado, evitando a colisão GL do L-004). Mapeamento de coordenadas é **identidade** (`physical-length` + `image-fit: fill` + contexto offscreen do tamanho da área web). **Evidência confirmada pelo usuário**: navegou ao **YouTube** pela barra de URL (HTTPS/TLS, render do Servo, `/tmp/m2-youtube-evidence.png`) + texto digitado num `<input>` (`/tmp/m2-start-frame.png`, prova pointer+teclado) + scroll/voltar/avançar/recarregar/resize OK, **sem erros de GL no log** (L-004 não regrediu). Decisões em **ADR-0004**; sem novas deps (tudo via `servo::`/`slint::`); waker real adiado. **Observação:** build **debug** + cópia-CPU por frame deixa páginas pesadas (YouTube) **travadas** — esperado/conhecido (ver **L-005**), destravado no M3. **Próximo: M3** (render GPU / texture sharing — elimina a cópia-CPU). Pendências humanas (não bloqueiam M3): conectores globais claude.ai só desconectam na web; 2 deny rules do AgentShield no `settings.json` (precisa de OK explícito).
 
 ---
 
@@ -49,6 +49,13 @@
 **Trade-off:** `0.2.0` é feature release, não LTS (linha `0.1.x`); próximo bump pode ter mais churn. Mitigável migrando p/ LTS num ADR futuro.
 **Impact:** M1 já parte de um motor que comprovadamente builda+renderiza aqui. As deps de sistema continuam obrigatórias (apt) e a 1ª compilação ainda é cara (mas viável).
 
+### AD-008: M2 — input traduzido no Rust + resize só-offscreen (2026-06-10)
+
+**Decision:** O `.slint` decodifica eventos a **primitivos** e o `src/input.rs` traduz para `InputEvent`/`Scroll` do Servo (não passa structs do Slint ao Rust). Coordenadas = **identidade** (`physical-length` + `image-fit: fill` + offscreen do tamanho da área web). Resize chama **só** `webview.resize` (FBO offscreen + reflow); o `WindowRenderingContext` pai não é redimensionado. Chrome dirigido pelo `WebViewDelegate`. Formalizado no **ADR-0004**.
+**Reason:** Desacopla o Rust dos tipos de evento do Slint (funciona com a macro inline, sem `build.rs`); mapeamento exato sem letterbox; mexer só no offscreen evita a colisão GL das duas superfícies na mesma janela (classe do L-004). Tudo via re-exports `servo::`/`slint::` — sem deps novas.
+**Trade-off:** `Code::Unidentified` no teclado (Slint não expõe o code físico) pode limitar atalhos; cópia-CPU segue como gargalo (AD-003).
+**Impact:** Browser interativo/navegável; o caminho de input/chrome/resize independe do readback → evolui ao M3 sem mudança.
+
 ### AD-007: M1 — Slint hospeda o Servo via OffscreenRenderingContext (hardware) + cópia-CPU (2026-06-10)
 
 **Decision:** Slint dono do loop/janela (renderer femtovg/GL); Servo renderiza num **`OffscreenRenderingContext`** (FBO de GL de **hardware**) derivado da janela do Slint (feature `raw-window-handle-06`); frame por **cópia-CPU** (`read_to_image` → `SharedPixelBuffer` → `Image::from_rgba8` → `set_frame`), bombeado por `slint::Timer`. Formalizado no **ADR-0003**.
@@ -94,6 +101,13 @@ _Nenhum no momento._
 **Solution:** **Lazy-init** o contexto do Servo alguns ticks após o loop subir (`INIT_DELAY_TICKS`), FORA do setup do femtovg → os dois renderers de hardware coexistem. Sequência de leitura canônica (`servo-paint/screenshot.rs`): `paint` → `make_current` → `read_to_image`. `webview.show()`+`focus()` obrigatórios (sem `show()` a pipeline fica "fechada"/branca). Diagnóstico decisivo: logar `LoadStatus` + luminância média do frame + ler a fonte do `servo` no cache do cargo.
 **Prevents:** semanas perdidas em "tela branca" ao integrar dois renderers de GPU na mesma janela. (No M3, o caminho correto é o *texture sharing* do exemplo oficial.) **Processo:** decisão de rendering é do usuário — não trocar a abordagem combinada (ex.: cair p/ software) sem avisar (correção feita nesta sessão).
 
+### L-005: Travamento em páginas pesadas no M2 = build debug + cópia-CPU (não é bug) (2026-06-10)
+
+**Context:** No M2, navegando a páginas reais pesadas (YouTube), a interação fica **visivelmente travada**.
+**Problem:** Pode parecer regressão, mas é a soma de fatores **esperados**: (1) build **debug** (não-otimizado) — fator dominante; (2) **cópia-CPU por frame** (AD-003/ADR-0003): cada frame faz `read_to_image` (readback GL, caro) + `SharedPixelBuffer` novo + cópia + upload à `Image` do femtovg, custo proporcional ao tamanho da viewport; (3) `Timer` ~60 Hz sem waker real spina o loop mesmo ocioso (otimização adiada no M2).
+**Solution:** Não tratar como bug. `cargo run --release` melhora muito (mas recompila o motor inteiro em release = 1ª build pesada). A causa estrutural (cópia-CPU) **é exatamente o que o M3 elimina** (texture sharing GPU/zero-copy). O waker real reduz o CPU ocioso (tarefa futura barata).
+**Prevents:** "consertar" perf trocando arquitetura por engano antes do M3, ou suspeitar de regressão no input.
+
 ---
 
 ## Quick Tasks Completed
@@ -111,6 +125,8 @@ _Nenhum no momento._
 - [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
 - [ ] Custom lints com fix-instructions — adicionar quando o agente errar (princípio doc [A]) — Captured during: harness H3
 - [ ] Ativar a sandbox `sandbox/docker-compose.yml` (rodar browser sobre URL não confiável) — M1 — Captured during: harness H3
+- [ ] **Waker real** (`EventLoopWaker` que acorda o loop sob demanda) p/ reduzir CPU ocioso do `Timer` 60 Hz — adiado no M2 — Captured during: M2
+- [ ] Tratar `Code` físico do teclado (hoje `Code::Unidentified`) p/ atalhos que dependem dele — Captured during: M2
 
 ---
 
@@ -127,6 +143,7 @@ _Nenhum no momento._
 - [x] H2–H4 infra: hooks PreToolUse/Stop/SessionStart, sandbox skeleton, template de métricas — feito e testado
 - [x] **Reavaliar escopo dos feedback-hooks** agora que `basedbrowser` puxa o `servo` — feito (2026-06-10, autorizado pelo usuário): avaliação concluiu que o motor é **dep cacheada** (não recompila por check; clippy ~0.7s com cache quente), então `basedbrowser` SEGUE coberto pelo gate (não excluído). Adicionado **guard de build fria** no `gate-build.sh` (pula a build se o `libservo-*.rlib` ainda não existe, evitando estourar o timeout de 120s do Stop); comentários dos hooks atualizados. `--exclude servo-poc` mantido (PoC descartável).
 - [x] M1: primeiros pixels Slint↔Servo (cópia-CPU) — feito (ADR-0003, L-004); evidência confirmada pelo usuário
+- [x] **M2: browser navegável** — feito (ADR-0004, AD-008, L-005): input (pointer/scroll/teclado), chrome (URL/voltar/avançar/recarregar/loading/título), resize dinâmico. Evidência: YouTube via barra de URL + digitação em `<input>` + scroll/nav/resize, sem erros de GL. 6 commits atômicos (T1–T6)
 
 ---
 

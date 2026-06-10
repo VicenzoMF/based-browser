@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current Milestone:** M2 — Browser navegável
-**Status:** M1 ✅ concluído em 2026-06-10 (M0 ✅ no mesmo dia)
+**Current Milestone:** M3 — Performance: render GPU
+**Status:** M2 ✅ concluído em 2026-06-10 (M0 e M1 ✅ no mesmo dia)
 
 ---
 
@@ -46,23 +46,34 @@
 
 ---
 
-## M2 — Browser navegável
+## M2 — Browser navegável ✅ CONCLUÍDO (2026-06-10)
 
 **Goal:** Deixa de ser uma imagem estática e vira algo interativo e dirigível pelo usuário.
+**Atingido** — `crates/basedbrowser` evoluiu o pipeline do M1 com input, chrome e resize. Evidência:
+navegou ao **YouTube** via barra de URL (HTTPS/TLS) renderizado pelo Servo + texto digitado num
+`<input>` (pointer+teclado), com scroll/voltar/avançar/recarregar/resize confirmados pelo usuário.
+Decisões em **ADR-0004**. Detalhe: build **debug** + cópia-CPU por frame deixa páginas pesadas
+travadas — esperado até o M3 (ver Lições/Deferred).
 
 ### Features
 
-**Input** - PLANNED
+**Input** - DONE
 
-- Pointer (clique/move) winit → `WindowEvent` do Servo
-- Scroll
-- Teclado (digitação em formulários, atalhos)
+- Pointer (clique/move) → `InputEvent::{MouseButton,MouseMove}`; scroll → `notify_scroll_event`
+- Teclado → `InputEvent::Keyboard` (`slint::platform::Key` → `keyboard_types::NamedKey`/`Character`)
+- Tradução no `src/input.rs` (decodificação a primitivos no `.slint`); mapeamento de coordenadas
+  **identidade** via `physical-length` + `image-fit: fill` + contexto offscreen do tamanho da área web
 
-**Chrome mínimo (.slint)** - PLANNED
+**Chrome mínimo (.slint)** - DONE
 
-- Barra de URL (digitar e navegar)
-- Voltar / avançar / recarregar
-- Indicador de carregamento
+- Barra de URL (`LineEdit` → `webview.load`; `parse_user_url` prefixa `https://`)
+- Voltar / avançar / recarregar (`go_back`/`go_forward`/`reload`, guardados por `can_go_*`)
+- Indicador de carregamento + título dinâmico, dirigidos pelo `WebViewDelegate` (`Embedder`)
+
+**Resize dinâmico** - DONE
+
+- `webview.resize` redimensiona só o `OffscreenRenderingContext` (FBO + reflow); o
+  `WindowRenderingContext` pai NÃO é tocado (evita a colisão GL do L-004) — verificado sem corrupção
 
 ---
 
