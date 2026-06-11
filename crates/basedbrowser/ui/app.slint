@@ -87,8 +87,10 @@ export component MainWindow inherits Window {
         spacing: 0;
 
         // Barra de abas (M4): uma "pílula" por aba (clicar seleciona; × fecha) + botão "+" p/ nova
-        // aba. A `TouchArea` de fundo captura o clique de seleção; o × (Button) intercepta o seu;
-        // o Text não captura pointer, então o clique no título "atravessa" até a TouchArea.
+        // aba. A `TouchArea` de fundo captura o clique de seleção; o × é um elemento custom (não o
+        // Button do std-widgets, cuja altura mínima estourava a pílula) — uma coluna de largura fixa
+        // que preenche a altura da linha, com o glifo centrado e realce no hover; intercepta o clique.
+        // O Text do título não captura pointer, então o clique nele "atravessa" até a TouchArea.
         HorizontalLayout {
             vertical-stretch: 0;
             padding: 4px;
@@ -115,10 +117,22 @@ export component MainWindow inherits Window {
                         overflow: elide;
                         text: tab.title == "" ? "Nova aba" : tab.title;
                     }
-                    Button {
+                    Rectangle {
                         width: 22px;
-                        text: "×";
-                        clicked => { root.close-tab(idx); }
+                        border-radius: 4px;
+                        background: tabclose.has-hover ? #4a4a5e : transparent;
+                        tabclose := TouchArea {
+                            clicked => { root.close-tab(idx); }
+                        }
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: "×";
+                            font-size: 17px;
+                            color: tabclose.has-hover ? #ffffff : #b8b8c6;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
@@ -178,7 +192,7 @@ export component MainWindow inherits Window {
         }
 
         // Barra de favoritos (M4): aparece só se há favoritos. Cada "pílula" abre na aba ativa; o ×
-        // remove. Mesma técnica da barra de abas (TouchArea de fundo + overlay com Text + Button).
+        // remove (mesmo elemento × custom da barra de abas — TouchArea de fundo + Text + coluna ×).
         if root.bookmarks.length > 0 : HorizontalLayout {
             vertical-stretch: 0;
             padding: 4px;
@@ -195,7 +209,7 @@ export component MainWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px;
-                    padding-right: 4px;
+                    padding-right: 3px;
                     spacing: 2px;
                     Text {
                         horizontal-stretch: 1;
@@ -204,10 +218,22 @@ export component MainWindow inherits Window {
                         overflow: elide;
                         text: bm.title == "" ? bm.url : bm.title;
                     }
-                    Button {
+                    Rectangle {
                         width: 20px;
-                        text: "×";
-                        clicked => { root.remove-bookmark(idx); }
+                        border-radius: 4px;
+                        background: bmclose.has-hover ? #4a4a5e : transparent;
+                        bmclose := TouchArea {
+                            clicked => { root.remove-bookmark(idx); }
+                        }
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: "×";
+                            font-size: 15px;
+                            color: bmclose.has-hover ? #ffffff : #b8b8c6;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
