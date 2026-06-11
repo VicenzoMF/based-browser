@@ -1,7 +1,9 @@
 # State
 
 **Last Updated:** 2026-06-11
-**Current Work:** **Marco M6 CONCLUÍDO** ✅ — **recursos de usuário**: fecha a lacuna que impedia o uso no dia a dia. **Persistência de cookies + `localStorage`/`sessionStorage`** entre execuções — `init_manager` agora aplica `ServoBuilder.opts(Opts{ config_dir: Some(~/.config/basedbrowser/servo/), ..Opts::default() })` (temporary_storage=false ⇒ persiste; o Servo passa o `config_dir` p/ `new_resource_threads` (cookies) E `new_storage_threads` (storage)). Mexida MÍNIMA e aditiva na API do Servo (1 ponto; embedding fino, L-001); não reorganiza o init lazy do GL (L-004); honra `XDG_CONFIG_HOME` (perfis-limpos do ADR-0008). **"Limpar dados de navegação"** (botão no chrome) = `clear_cookies()` + `clear_site_data(sites, Local|Session)` via `SiteDataManager` + `persist::clear_history()`; PRESERVA favoritos e a sessão (convenção de browser); roda em callback de UI (fora do `spin_event_loop`; invariante anti-reentrância do ADR-0007). **Downloads: SPIKE CONCLUÍDO — inviável na API estável do `servo 0.2.0`** (o embedder não vê os headers da RESPOSTA; `load_web_resource` só dá a request, `.intercept()` FORNECE a resposta, `network_manager()` só cache, `fetch_async` interno; sem API de download/link/menu) ⇒ auto-detecção de attachment é arquiteturalmente impossível, o workaround degrada p/ "cole-uma-URL" a custo real → **DEFERIDO** (não forçar). Decisões+veredito em **ADR-0009**; **AD-012** + **L-009** abaixo. Evidência reproduzível (sem captura de janela, L-008): drivers gated `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (`verify-persist.sh`: RUN2 lê `cookie=42 local=persisted-99`; `verify-clear.sh`: cookies/histórico→0, favoritos preservados). Nenhuma dep nova; config protegida intocada. 5 commits atômicos (T1–T5). **Próximo: M7 = devtools/inspeção.**
+**Current Work:** **Marco M7 CONCLUÍDO** ✅ — **devtools / inspeção in-app** (console + eval + rede), **sem Firefox externo**. Era o marco de MAIOR incerteza de API; a pesquisa NA FONTE concluiu que (ao contrário dos downloads do M6) a inspeção É viável por dois caminhos: **console/eval são in-process** (`WebViewDelegate::show_console_message` recebe todo `console.log` INCONDICIONALMENTE; `WebView::evaluate_javascript` → `JSValue`, com refs de DOM ⇒ inspeção via eval), e **a rede só sai pelo socket do servidor de devtools do Servo** (o crate `servo-devtools` é hermético; sem consumo in-process — a parede do M6/L-009). **Decisão do usuário (Plan Mode): construir o NOSSO cliente RDP in-app** (`src/devtools_client.rs`) que conecta no servidor do próprio Servo (loopback) e entrega **rede COMPLETA (req+resp, headers, payload, status)** no nosso UI — o caveat "só Firefox nightly" do upstream NÃO se aplica (os 2 lados são nossos, na 0.2.0 pinada; protocolo fixo pelo pin). `init_manager` liga o servidor OPT-IN (`BASEDBROWSER_DEVTOOLS`, loopback, porta fixa 7000 — efêmera `:0` é inútil pois o Servo reporta a porta PEDIDA, não a real do listener); `Embedder` é `ServoDelegate` (autoriza a conexão + spawna o cliente cedo). Painel no chrome (`ui/app.slint`): aba Console (log ao vivo + REPL de eval) + aba Rede (lista + detalhe de headers/payload). Threading respeita o ADR-0007 (cliente em thread dedicada → canal `mpsc` → Timer drena na thread de UI; nada toca o Slint na thread do cliente). Segurança: socket OFF por padrão, loopback, conexão autorizada; risco residual (outro processo local) aceito por ser opt-in/dev (hardening por token deferido). Decisões em **ADR-0010**; **AD-013** + **L-010** abaixo. Evidência (sem captura de janela, L-008): driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅: console hello-42, eval 2+2→4 e document.title→BBDEVTOOLS, rede GET status=200 + response header, models do painel populados). Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T1–T6). **Próximo: sustentabilidade (runbook + CI do pin do Servo, Goal #3) e/ou outras plataformas.**
+
+**Marco M6 CONCLUÍDO** ✅ — **recursos de usuário**: fecha a lacuna que impedia o uso no dia a dia. **Persistência de cookies + `localStorage`/`sessionStorage`** entre execuções — `init_manager` agora aplica `ServoBuilder.opts(Opts{ config_dir: Some(~/.config/basedbrowser/servo/), ..Opts::default() })` (temporary_storage=false ⇒ persiste; o Servo passa o `config_dir` p/ `new_resource_threads` (cookies) E `new_storage_threads` (storage)). Mexida MÍNIMA e aditiva na API do Servo (1 ponto; embedding fino, L-001); não reorganiza o init lazy do GL (L-004); honra `XDG_CONFIG_HOME` (perfis-limpos do ADR-0008). **"Limpar dados de navegação"** (botão no chrome) = `clear_cookies()` + `clear_site_data(sites, Local|Session)` via `SiteDataManager` + `persist::clear_history()`; PRESERVA favoritos e a sessão (convenção de browser); roda em callback de UI (fora do `spin_event_loop`; invariante anti-reentrância do ADR-0007). **Downloads: SPIKE CONCLUÍDO — inviável na API estável do `servo 0.2.0`** (o embedder não vê os headers da RESPOSTA; `load_web_resource` só dá a request, `.intercept()` FORNECE a resposta, `network_manager()` só cache, `fetch_async` interno; sem API de download/link/menu) ⇒ auto-detecção de attachment é arquiteturalmente impossível, o workaround degrada p/ "cole-uma-URL" a custo real → **DEFERIDO** (não forçar). Decisões+veredito em **ADR-0009**; **AD-012** + **L-009** abaixo. Evidência reproduzível (sem captura de janela, L-008): drivers gated `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (`verify-persist.sh`: RUN2 lê `cookie=42 local=persisted-99`; `verify-clear.sh`: cookies/histórico→0, favoritos preservados). Nenhuma dep nova; config protegida intocada. 5 commits atômicos (T1–T5). **Próximo: M7 = devtools/inspeção.**
 
 **Marco M5 CONCLUÍDO** ✅ — **validar a tese (footprint/RAM vs. Chromium)**, o Goal #1 do PROJECT, que nunca tinha sido medido. Harness de medição **reproduzível** em bash (`scripts/m5/`: `measure.sh` soma a ÁRVORE DE PROCESSOS via `/proc/<pid>/smaps_rollup` — PPID-walk, pois o children-file está ausente no kernel; `run.sh` roda a matriz; `pages/{idle,heavy}.html` determinísticas, sem rede). Metodologia JUSTA (confirmada na fonte: `Opts.multiprocess` default=`false` → **BasedBrowser é single-process**; **Chrome é multiprocess**): perfil limpo nos dois (`XDG_CONFIG_HOME`/`--user-data-dir`), headful, **release** (L-005), K=5 (pass^k, mediana robusta), **PSS** como métrica-título (RSS junto). Única mudança de produto = hook env `BASEDBROWSER_OPEN_TABS=N` (abre N abas p/ o custo por-aba; embedding fino, L-001). **VEREDITO: tese VALIDADA** — BasedBrowser é mais leve que o Chrome em TODOS os estados: ocioso **171,1 MiB PSS (1 proc) vs 314,7 MiB (13 proc) = 1,84×**; por-aba **5,5 vs 11,8 MiB = 2,16×**; pesada 205 vs 333 MiB. PORÉM o "ordens de magnitude" do PROJECT é **refutado/qualificado** — na métrica justa (PSS) é ~1,8×, não 10× (o RSS ×5,2 infla o Chrome por contar páginas compartilhadas ~13×). Decisão+números em **ADR-0008** (datado, imutável; design-for-rot). Relatório interno do Servo (`create_memory_report`) **adiado** (L-001: 4+ superfícies de API de crate interno; veredito não depende). **Re-priorização (2026-06-11, usuário): M6 = recursos de usuário** (cookies/`localStorage` persistentes via `opts.config_dir`; downloads — sem API de 1ª classe no Servo, parte dura) **e M7 = devtools** (era M6). Sobre o M4 (ADR-0007/AD-010/L-007) abaixo.
 
@@ -10,6 +12,24 @@
 ---
 
 ## Recent Decisions (Last 60 days)
+
+### AD-013: M7 — devtools in-app (console/eval in-process + cliente RDP próprio p/ rede) (2026-06-11)
+
+**Decision:** Entregar inspeção in-app SEM Firefox: **console + eval in-process**
+(`show_console_message` + `evaluate_javascript`) e **rede completa via um cliente RDP NOSSO**
+(`src/devtools_client.rs`) que conecta no servidor de devtools do próprio Servo (loopback, OPT-IN por
+`BASEDBROWSER_DEVTOOLS`). Painel no `ui/app.slint` (Console + Rede). Formalizado no **ADR-0010**.
+**Reason:** O dado de rede COMPLETO (req+resp/headers/payload) existe mas só sai pelo socket RDP (o
+crate `servo-devtools` é hermético — sem consumo in-process). O usuário (Plan Mode) escolheu o cliente
+próprio em vez do Firefox externo; o caveat "Firefox nightly" não se aplica (os 2 lados são nossos, na
+0.2.0 pinada → protocolo fixo pelo pin). Console/eval são caminhos in-process de 1ª classe.
+**Trade-off:** ~300 linhas de protocolo RDP que mantemos (revisitadas nos sprints de update do pin);
+porta FIXA (o Servo reporta a porta pedida, não a real → `:0` inútil); rede só popula com o opt-in
+ligado; sem WebSocket/breakpoints/árvore-DOM-visual no v1 (DOM via eval).
+**Impact:** Inspeção real destrava o dev sobre o Servo. Embedding fino (1 ponto no `ServoBuilder` +
+`set_delegate`); nenhuma dep nova. Threading respeita o ADR-0007 (cliente em thread → canal → UI).
+Segurança: socket OFF por padrão, loopback, conexão autorizada; risco residual (processo local) aceito
+por ser opt-in/dev (hardening por token deferido).
 
 ### AD-012: M6 — persistência por padrão + limpar dados; downloads deferido (2026-06-11)
 
@@ -209,6 +229,26 @@ provar inviabilidade é um resultado tão válido quanto implementar.
 que a API estável do motor simplesmente não suporta hoje. **Processo:** confirmar NA FONTE (4 crates do
 servo) antes de decidir; a decisão de escopo (deferir) foi do usuário, informada pelo spike.
 
+### L-010: DevTools do Servo — console/eval in-process, mas rede só via socket RDP (2026-06-11)
+
+**Context:** No M7, mapeando o que dá p/ inspecionar (console/DOM/rede) com a API estável do `servo 0.2.0`.
+**Problem/aprendizado:** três regimes MUITO diferentes na MESMA feature: (1) **console** chega ao
+embedder INCONDICIONALMENTE (`show_console_message`; `dom/console.rs` emite sempre, separado do gating
+de devtools) e **eval** é 1ª classe (`evaluate_javascript` → `JSValue` com refs de DOM) — ambos
+in-process, fáceis; (2) **rede** tem o dado COMPLETO (req+resp/headers/payload) mas o crate
+`servo-devtools` é HERMÉTICO (só `pub fn start_server`) — **zero consumo in-process**; só sai por um
+**socket TCP** falando o protocolo RDP do Firefox. Detalhes que de-riscaram o cliente: o handshake
+mínimo é `root → listTabs → getWatcher → watchResources["network-event"]` (wire `<len>:<json>`),
+`network-event` NÃO tem snapshot (só eventos futuros → o cliente tem que subir CEDO e fazer **retry de
+`listTabs`** até a aba existir, senão trava numa corrida de timing); status/headers/payload vêm em
+`resources-updated-array` + pedidos `getResponse{Headers,Content}` ao `NetworkEventActor`; e o Servo
+**reporta a porta PEDIDA, não a real** do listener (`lib.rs:202-203`) → porta efêmera `:0` é inútil.
+**Solution:** console/eval direto no delegate; rede por um cliente RDP NOSSO (loopback, mesma 0.2.0
+pinada → não é "Firefox-frágil"), em thread dedicada + canal p/ a UI (ADR-0007). Mapear o wire NA FONTE
+**e** capturar pacotes reais com um probe (python) antes de codar o parser de-riscou o ponto mais incerto.
+**Prevents:** travar o handshake numa corrida de timing, ou assumir consumo in-process que não existe, ou
+usar porta efêmera que o Servo não reporta. **Processo:** ler a fonte + probe empírico > chutar o protocolo.
+
 ## Quick Tasks Completed
 
 | #   | Description | Date | Commit | Status |
@@ -224,6 +264,8 @@ servo) antes de decidir; a decisão de escopo (deferir) foi do usuário, informa
 - [ ] **Downloads de arquivos** — deferido no M6 (L-009/ADR-0009): inviável na API estável do `servo 0.2.0` (embedder não vê headers de resposta; sem API de download/link/menu). Destrava quando o Servo expuser um hook de resposta/evento de download, OU num marco dedicado com cliente HTTP próprio — Captured during: M6
 - [ ] **Modo privado/efêmero** (toggle `Opts.temporary_storage=true` na UI) — M6 persiste por padrão; um modo sem persistência fica p/ depois — Captured during: M6
 - [ ] **`clear_session_cookies()`** (limpar só cookies de sessão) como opção granular no "limpar dados" — Captured during: M6
+- [ ] **Hardening do devtools por token** — exigir o `auth_token` (de `OnDevtoolsStarted`) em vez de autorizar toda conexão de loopback, fechando o risco residual de outro processo local conectar (ADR-0010). O quirk de comprimento do token (`servo-devtools/lib.rs:879`, `{:X}` de u32 com <8 dígitos hex) precisa ser contornado — Captured during: M7
+- [ ] **DevTools v2** — WebSocket/SSE na aba Rede, árvore de DOM visual (hoje DOM via eval), breakpoints/debugger (atores `thread`/`source`/`breakpoint` existem no `servo-devtools`), e talvez consumir o console TAMBÉM pelo RDP p/ stacktraces — Captured during: M7
 - [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
 - [ ] Render-diff / "olhos" E2E — **destravado (M1 ✅)**; nota: captura de **janela** automatizada está bloqueada no GNOME 46/Wayland (gdbus negado; `import`/X11 não vê Wayland). Caminho viável p/ E2E: dump in-app do frame (`BASEDBROWSER_DUMP_FRAME=<path>`) e comparar PNGs — Captured during: harness H2
 - [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
@@ -254,6 +296,7 @@ servo) antes de decidir; a decisão de escopo (deferir) foi do usuário, informa
 - [x] **M4: recursos de navegador** — feito (ADR-0007, AD-010, L-007): multi-aba (`TabManager`/`Tab`, reusa a ponte GPU do M3), `window.open`, favoritos/histórico/sessão persistidos em JSON (`src/persist.rs`, `serde`/`serde_json`/`dirs`), painel+autocomplete de histórico, restauração de sessão. Chrome → `ui/app.slint` (re-export inline, sem build.rs). Evidência: drivers in-app (`BASEDBROWSER_TAB_TEST`/`BOOKMARK_TEST`/`HISTORY_TEST`) + dumps por aba. 8 commits (T1–T7 + T4b)
 - [x] **M5: validar a tese (footprint vs. Chromium)** — feito (ADR-0008, AD-011, L-008): harness bash `scripts/m5/` (`measure.sh`+`run.sh`+`pages/`), PPID-walk de `/proc/smaps_rollup`, PSS-título, soma da árvore, perfil limpo, release, K=5. Hook `BASEDBROWSER_OPEN_TABS`. **Tese VALIDADA** (ocioso BB 171,1 MiB PSS / 1 proc vs Chrome 314,7 / 13 proc = 1,84×; por-aba 5,5 vs 11,8 MiB = 2,16×; pesada 205 vs 333 MiB). "Ordens de magnitude" qualificado p/ ~1,8× (PSS). Commits atômicos T1–T7
 - [x] **M6: recursos de usuário** — feito (ADR-0009, AD-012, L-009): persistência de cookies + Web Storage via `opts.config_dir` (`init_manager`); "limpar dados de navegação" (cookies/storage via `SiteDataManager` + histórico, preserva favoritos); downloads DEFERIDO (inviável na API estável do Servo 0.2.0). Evidência: drivers `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (verify-persist: RUN2 lê `cookie=42 local=persisted-99`; verify-clear: cookies/histórico→0, favoritos preservados). Nenhuma dep nova. 5 commits T1–T5
+- [x] **M7: devtools / inspeção in-app** — feito (ADR-0010, AD-013, L-010): console (`show_console_message`) + eval (`evaluate_javascript`) in-process + **cliente RDP próprio** (`src/devtools_client.rs`) p/ rede completa (req+resp/headers/payload) conectando no servidor de devtools do Servo (loopback, OPT-IN `BASEDBROWSER_DEVTOOLS`); painel no `ui/app.slint` (Console + Rede). Evidência: driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅). Nenhuma dep nova. 6 commits T1–T6
 
 ---
 

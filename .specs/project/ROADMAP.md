@@ -1,12 +1,11 @@
 # Roadmap
 
-**Current Milestone:** M7 — Devtools / inspeção (PLANNED)
-**Status:** M0–M6 ✅ concluídos (M0–M4 em 2026-06-10; **M5 e M6 em 2026-06-11**). M5 = tese VALIDADA
-(ADR-0008). **M6 = recursos de usuário** (cookies/Web Storage PERSISTEM; "limpar dados"; downloads
-DEFERIDO — inviável na API estável do Servo 0.2.0, ADR-0009).
-**Re-priorização (2026-06-11, decisão do usuário):** **M6 = recursos de usuário**; **M7 = devtools/
-inspeção** (era M6). Sustentabilidade (CI do Servo) e outras plataformas ficam pós-M7 (ver Future
-Considerations).
+**Current Milestone:** Sustentabilidade (runbook + CI do pin do Servo, Goal #3) e/ou outras plataformas
+(PLANNED — ver Future Considerations).
+**Status:** M0–M7 ✅ concluídos (M0–M4 em 2026-06-10; **M5, M6 e M7 em 2026-06-11**). M5 = tese VALIDADA
+(ADR-0008). M6 = recursos de usuário (cookies/Web Storage PERSISTEM; "limpar dados"; downloads DEFERIDO,
+ADR-0009). **M7 = devtools / inspeção in-app** (console + eval + rede req/resp via cliente RDP próprio,
+SEM Firefox; OPT-IN, ADR-0010).
 
 ---
 
@@ -213,11 +212,41 @@ dep nova; config protegida intocada. 5 commits atômicos (T1–T5).
 
 ---
 
-## M7 — Devtools / inspeção — PLANNED (era M6)
+## M7 — Devtools / inspeção in-app ✅ CONCLUÍDO (2026-06-11)
 
-**Goal:** Inspeção de DOM/console via os devtools do Servo (`servo-devtools`/`-traits`), com UI mínima
-de inspeção no chrome. Pesquisar a superfície de devtools exposta pelo `servo 0.2.0` (maior incerteza
-de API).
+**Goal:** Dar ao desenvolvedor uma forma de inspecionar **console, JS e rede** de uma página renderizada
+pelo Servo. Era o marco de MAIOR incerteza de API. **Atingido** — inspeção in-app **sem Firefox externo**.
+Decisões em **ADR-0010**. Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T1–T6).
+
+### Features
+
+**Console + eval (in-process)** - DONE
+
+- `WebViewDelegate::show_console_message` captura todo `console.log/warn/error/...` (incondicional, não
+  depende do servidor de devtools); `WebView::evaluate_javascript` → `JSValue` dá um REPL e inspeção de
+  DOM via eval. Buffer interior-mutável; UI escrita pelo LOOP/timer (ADR-0007).
+
+**Rede (req+resp/headers/payload) via cliente RDP próprio** - DONE
+
+- O dado de rede só sai pelo socket do servidor de devtools do Servo (crate hermético, sem consumo
+  in-process). `src/devtools_client.rs` conecta nele (loopback), faz o handshake RDP
+  (`root → listTabs → getWatcher → watchResources`) e extrai requisição + RESPOSTA (status/headers/
+  payload), enviando à UI por canal (thread dedicada; ADR-0007). Servidor OPT-IN (`BASEDBROWSER_DEVTOOLS`,
+  porta fixa loopback). O caveat "Firefox nightly" não se aplica (os 2 lados são nossos, 0.2.0 pinada).
+
+**Painel no chrome** - DONE
+
+- `ui/app.slint` (botão "DevTools"): aba Console (log ao vivo + REPL de eval) + aba Rede (lista método/
+  status/URL + detalhe de headers/payload). Re-export inline (sem build.rs, L-007); só primitivos (AD-008).
+
+**Segurança** - DONE
+
+- Socket OFF por padrão (opt-in), bind só em `127.0.0.1`, conexão autorizada. Risco residual (processo
+  local) aceito por ser opt-in/dev; hardening por token deferido (ADR-0010).
+
+**Evidência** (sem captura de janela, L-008): driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/
+verify-devtools.sh` — 6 checagens ✅ (console, eval 2+2 & document.title, rede status 200 + response
+header, models do painel populados).
 
 ---
 

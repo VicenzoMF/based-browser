@@ -24,6 +24,23 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
+Marco **M7 ✅** — **devtools / inspeção in-app** (console + eval + rede), **sem Firefox externo**. Era o
+marco de MAIOR incerteza de API. **Console** chega ao embedder INCONDICIONALMENTE
+(`WebViewDelegate::show_console_message` no `Embedder`, `src/main.rs`); **eval** via
+`WebView::evaluate_javascript` (REPL + inspeção de DOM via eval). **Rede** (req+resp/headers/payload): o
+crate `servo-devtools` é hermético (sem consumo in-process) ⇒ **cliente RDP NOSSO** em
+`src/devtools_client.rs` conecta no servidor de devtools do PRÓPRIO Servo (loopback) e faz o handshake
+`root→listTabs→getWatcher→watchResources["network-event"]`; thread dedicada → canal `mpsc` → Timer drena
+na thread de UI (ADR-0007). `init_manager` liga o servidor **OPT-IN** (`BASEDBROWSER_DEVTOOLS`,
+`ServoBuilder.preferences`, loopback porta FIXA 7000 — `:0` é inútil: o Servo reporta a porta PEDIDA, não
+a real do listener) + `Embedder: ServoDelegate` (autoriza conexão + spawna o cliente cedo). Caveat
+"Firefox nightly" do upstream NÃO se aplica (os 2 lados são nossos, na 0.2.0 pinada → protocolo fixo pelo
+pin). Painel em **`ui/app.slint`** (botão "DevTools": aba Console + aba Rede c/ detalhe de headers/payload).
+Segurança: socket OFF por padrão, loopback, conexão autorizada; risco residual (processo local) aceito
+por opt-in/dev (hardening por token deferido). Decisões em **ADR-0010** · **AD-013** · **L-010**. Evidência
+(sem captura de janela, L-008): driver `BASEDBROWSER_DEVTOOLS_TEST` + **`scripts/m7/`** (`verify-devtools.sh`,
+`pages/{devtools.html,data.json}`) — 6 checagens ✅. Nenhuma dep nova. Próximo: **sustentabilidade (CI do
+pin do Servo, Goal #3)** e/ou outras plataformas.
 Marco **M6 ✅** — **recursos de usuário** (fecha a lacuna do dia a dia). **Persistência de cookies +
 `localStorage`/`sessionStorage`**: `init_manager` (`src/main.rs`) aplica
 `ServoBuilder.opts(Opts{ config_dir: Some(persist::servo_config_dir() = ~/.config/basedbrowser/servo/),
@@ -36,7 +53,7 @@ callback de UI (fora do `spin_event_loop`; ADR-0007). **Downloads DEFERIDO** —
 na API estável do `servo 0.2.0` (embedder não vê headers de resposta; sem API de download/link/menu).
 Decisões em **ADR-0009** · **AD-012** · **L-009**. Evidência (sem captura de janela, L-008): drivers
 `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + **`scripts/m6/`** (`verify-persist.sh`, `verify-clear.sh`,
-`pages/persist.html`). Nenhuma dep nova. Próximo: **M7 = devtools/inspeção**.
+`pages/persist.html`). Nenhuma dep nova. **M7 ✅ acima.**
 Marco **M5 ✅** — **tese validada (footprint vs. Chromium)**, o Goal #1 do PROJECT. Harness de medição
 reproduzível em bash (**`scripts/m5/`**: `measure.sh` soma a ÁRVORE DE PROCESSOS via
 `/proc/<pid>/smaps_rollup` com PPID-walk; `run.sh` roda a matriz; `pages/{idle,heavy}.html`). Metodologia
@@ -51,4 +68,4 @@ aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → reus
 M3; abas de fundo throttled). **Histórico**+**favoritos**+**restauração de sessão** em JSON
 (`src/persist.rs`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs`; L-007). Decisões em
 **ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003).
-**M6 ✅ acima**; próximo **M7 = devtools**. Harness **H1** ok.
+**M6/M7 ✅ acima**; próximo **sustentabilidade (CI do pin do Servo, Goal #3)**. Harness **H1** ok.
