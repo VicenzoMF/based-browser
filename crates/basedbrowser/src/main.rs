@@ -29,9 +29,10 @@ mod persist;
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
-    CookieSource, CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus,
-    OffscreenRenderingContext, Opts, RenderingContext, Servo, ServoBuilder, StorageType, WebView,
-    WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
+    AllowOrDenyRequest, CookieSource, CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker,
+    LoadStatus, OffscreenRenderingContext, Opts, Preferences, RenderingContext, Servo,
+    ServoBuilder, ServoDelegate, ServoError, StorageType, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{
@@ -161,6 +162,42 @@ struct Embedder {
     /// mas AINDA não registradas no `TabManager` — adicioná-las exigiria `borrow_mut` durante o
     /// `spin_event_loop` (reentrante). O loop drena esta fila pós-spin ([`integrate_pending_tabs`]).
     pending_new: Rc<RefCell<Vec<PendingTab>>>,
+    /// M7 (ADR-0010): estado de devtools compartilhado (console in-process + rede do cliente RDP +
+    /// porta do servidor). Escrito aqui durante o spin (console/porta) e drenado/lido pelo LOOP e pela
+    /// UI. Vazio/no-op quando o devtools está desligado (sem a env `BASEDBROWSER_DEVTOOLS`).
+    devtools: Rc<DevtoolsState>,
+}
+
+/// M7 (ADR-0010): estado de inspeção compartilhado (Rc) entre o `Embedder` (escreve console/porta
+/// durante o `spin_event_loop`), o LOOP (drena o canal de rede → models) e a UI (lê os buffers).
+/// Criado SEMPRE, mas só populado quando o servidor de devtools está ligado (`BASEDBROWSER_DEVTOOLS`).
+/// Tudo interior-mutável p/ o delegate escrever sem `borrow_mut` do `TabManager` (invariante ADR-0007).
+#[derive(Default)]
+struct DevtoolsState {
+    /// Porta do servidor de devtools do Servo, capturada via `notify_devtools_server_started` (porta
+    /// efêmera `:0` → o SO escolhe). `None` até o servidor subir. Usada pelo cliente RDP (T4)/UI (T5).
+    port: Cell<Option<u16>>,
+}
+
+/// M7 (ADR-0010): porta do servidor de devtools quando OPT-IN. `None` = desligado (sem a env
+/// `BASEDBROWSER_DEVTOOLS`) → sem socket, caminho normal e números do M5 intactos. Com a env setada:
+/// `1`/`true`/`on`/`yes`/vazio ligam na porta padrão do Servo (7000); um número (≥1024) escolhe a porta.
+///
+/// Porta **FIXA** (não efêmera) por necessidade: o Servo 0.2.0 reporta ao embedder a porta PEDIDA, não a
+/// real do listener — `servo-devtools-0.2.0/lib.rs:202-203` faz `Ok(address.port())` e descarta o
+/// `local_addr()` (l.196). Com `:0` o embedder receberia `0` e o cliente RDP não saberia onde conectar.
+/// Loopback sempre (`127.0.0.1`). Ver Decisão de segurança do ADR-0010.
+fn devtools_port() -> Option<u16> {
+    let raw = std::env::var("BASEDBROWSER_DEVTOOLS").ok()?;
+    let port = match raw.trim() {
+        "" | "1" | "true" | "on" | "yes" => 7000,
+        other => other
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p >= 1024)
+            .unwrap_or(7000),
+    };
+    Some(port)
 }
 
 /// Uma aba construída por `request_create_new` (window.open), aguardando integração no `TabManager`.
@@ -269,6 +306,33 @@ impl WebViewDelegate for Embedder {
             .push(PendingTab { webview, context });
         eprintln!("[m4] window.open: nova aba enfileirada (integra no próximo tick)");
         self.chrome_dirty.set(true);
+    }
+}
+
+/// `ServoDelegate` (M7, ADR-0010): hooks de NÍVEL-SERVO (não por-`WebView`). Usado SÓ para o servidor
+/// de devtools — setado via `servo.set_delegate` apenas quando o devtools está ligado. Roda durante o
+/// `spin_event_loop`; só mexe em estado interior-mutável (`devtools`), nunca escreve no Slint
+/// (invariante anti-reentrância do ADR-0007), e spawnar a thread do cliente RDP (T4) é seguro aqui.
+impl ServoDelegate for Embedder {
+    /// O servidor de devtools subiu. Capturamos a `port` (efêmera — pedimos `:0`, o SO escolhe) para o
+    /// cliente RDP in-app (T4) conectar e para a UI (T5) exibir. Logamos um sinal de TEXTO determinístico
+    /// para a verificação sem captura de janela (L-008).
+    fn notify_devtools_server_started(&self, port: u16, _token: String) {
+        self.devtools.port.set(Some(port));
+        eprintln!("[m7] devtools: server started on 127.0.0.1:{port}");
+    }
+
+    /// Pedido de conexão de um cliente de devtools. O servidor está em loopback (`127.0.0.1`) e é o NOSSO
+    /// cliente RDP in-app → autorizamos. (Risco residual honesto, ADR-0010: enquanto o devtools está
+    /// ligado, outro processo LOCAL também poderia conectar — aceito por ser opt-in/dev e loopback.)
+    fn request_devtools_connection(&self, request: AllowOrDenyRequest) {
+        eprintln!("[m7] devtools: conexão de cliente autorizada (loopback)");
+        request.allow();
+    }
+
+    /// Erros de nível-Servo (inclui `DevtoolsFailedToStart`). Apenas loga — nunca paniqueia.
+    fn notify_error(&self, error: ServoError) {
+        eprintln!("[m7] devtools: erro do Servo: {error:?}");
     }
 }
 
@@ -453,8 +517,28 @@ fn init_manager(
             ..Opts::default()
         });
     }
+    // M7 (ADR-0010): OPT-IN — habilita o servidor de devtools do Servo só com `BASEDBROWSER_DEVTOOLS`.
+    // `devtools_server_enabled=true` faz o Servo subir o servidor (protocolo RDP do Firefox) em
+    // `build()`; bind em `127.0.0.1:<port>` (loopback, porta fixa — ver `devtools_port`). Mexida
+    // MÍNIMA/aditiva no builder (1 ponto, igual ao `opts` do M6; L-001), não reorganiza o init lazy do
+    // GL (L-004).
+    if let Some(port) = devtools_port() {
+        builder = builder.preferences(Preferences {
+            devtools_server_enabled: true,
+            devtools_server_listen_address: format!("127.0.0.1:{port}"),
+            ..Preferences::default()
+        });
+        eprintln!(
+            "[m7] devtools: servidor habilitado (BASEDBROWSER_DEVTOOLS; loopback 127.0.0.1:{port})"
+        );
+    }
     let servo = builder.build();
     servo.setup_logging();
+    // M7: registra o `ServoDelegate` (hooks de nível-servo p/ devtools) só quando ligado — caminho
+    // normal fica byte-idêntico. O delegate é o próprio `Embedder` (Rc<Embedder> → Rc<dyn ServoDelegate>).
+    if devtools_port().is_some() {
+        servo.set_delegate(sink.clone());
+    }
 
     let mut manager = TabManager {
         tabs: Vec::new(),
@@ -1402,6 +1486,7 @@ fn main() -> Result<(), slint::PlatformError> {
         manager: Rc::downgrade(&manager),
         chrome_dirty: chrome_dirty.clone(),
         pending_new: pending_new.clone(),
+        devtools: Rc::new(DevtoolsState::default()), // M7 (ADR-0010): inspeção (console/rede/porta)
     });
     let logged = Rc::new(Cell::new(false));
     // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
