@@ -92,10 +92,6 @@ pub fn load_bookmarks() -> Vec<Bookmark> {
 }
 
 /// Persiste os favoritos (atômico). Erros são logados, não propagados.
-#[expect(
-    dead_code,
-    reason = "consumido na T5 do M4 (add/remove na barra de favoritos); a infra de save é landada aqui na T2"
-)]
 pub fn save_bookmarks(bookmarks: &[Bookmark]) {
     save_under(BOOKMARKS_FILE, &bookmarks, "favoritos");
 }

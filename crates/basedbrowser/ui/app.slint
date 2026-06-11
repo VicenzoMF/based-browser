@@ -12,6 +12,13 @@ export struct TabInfo {
     active: bool,
 }
 
+// Um favorito na barra de favoritos (M4). O Rust constrói um `VecModel<BookmarkInfo>` a partir do
+// `AppData` (persistido em ~/.config/basedbrowser/bookmarks.json) e o entrega à propriedade `bookmarks`.
+export struct BookmarkInfo {
+    title: string,
+    url: string,
+}
+
 // Chrome do M2/M4: barra de abas + barra de navegação + área web. O `.slint` apenas DECODIFICA cada
 // evento para primitivos e chama um callback; a tradução primitivo -> `InputEvent` do Servo mora no
 // Rust (`input.rs`). Coordenadas: declarar os params como `physical-length` faz o Slint
@@ -28,6 +35,8 @@ export component MainWindow inherits Window {
     in property <string> window-title: "BasedBrowser";
     // M4: lista de abas (derivada do TabManager no Rust).
     in property <[TabInfo]> tabs;
+    // M4: lista de favoritos (derivada do AppData no Rust).
+    in property <[BookmarkInfo]> bookmarks;
 
     // Chrome -> Rust.
     callback load-url(string);
@@ -38,6 +47,10 @@ export component MainWindow inherits Window {
     callback new-tab();
     callback select-tab(int);
     callback close-tab(int);
+    // M4: favoritos (★ adiciona a página atual; open/remove por índice na lista `bookmarks`).
+    callback add-bookmark();
+    callback open-bookmark(int);
+    callback remove-bookmark(int);
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -123,11 +136,53 @@ export component MainWindow inherits Window {
                 text: root.page-url;
                 accepted(t) => { root.load-url(t); }
             }
+            // ★ adiciona a página atual aos favoritos (M4).
+            Button {
+                text: "★";
+                clicked => { root.add-bookmark(); }
+            }
             if root.loading : Text {
                 vertical-alignment: center;
                 color: #aaaaaa;
                 text: "carregando...";
             }
+        }
+
+        // Barra de favoritos (M4): aparece só se há favoritos. Cada "pílula" abre na aba ativa; o ×
+        // remove. Mesma técnica da barra de abas (TouchArea de fundo + overlay com Text + Button).
+        if root.bookmarks.length > 0 : HorizontalLayout {
+            vertical-stretch: 0;
+            padding: 4px;
+            padding-top: 0;
+            spacing: 6px;
+            for bm[idx] in root.bookmarks : Rectangle {
+                height: 26px;
+                min-width: 64px;
+                max-width: 220px;
+                background: #15151b;
+                border-radius: 5px;
+                TouchArea {
+                    clicked => { root.open-bookmark(idx); }
+                }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    spacing: 2px;
+                    Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        color: #c8c8d4;
+                        overflow: elide;
+                        text: bm.title == "" ? bm.url : bm.title;
+                    }
+                    Button {
+                        width: 20px;
+                        text: "×";
+                        clicked => { root.remove-bookmark(idx); }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
         }
 
         // Area web: a Image exibe o frame do Servo; a TouchArea captura pointer/scroll e o

@@ -43,7 +43,7 @@ use url::Url;
 // NÃO usamos `build.rs`/`include_modules!()` de propósito: aquele caminho injeta o `app.rs` gerado
 // como FONTE do crate, e o código gerado usa `.unwrap()`/`.expect()` à vontade → trombaria com os
 // lints `deny` do projeto; a expansão da macro inline (crate externo) é isenta do clippy. Ver ADR-0007.
-slint::slint!(export { MainWindow, TabInfo } from "../ui/app.slint";);
+slint::slint!(export { MainWindow, TabInfo, BookmarkInfo } from "../ui/app.slint";);
 
 /// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
 /// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
@@ -883,6 +883,100 @@ fn wire_tabs(
     });
 }
 
+/// Cria a barra de favoritos: model populado dos favoritos carregados + callbacks.
+fn setup_bookmarks(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+) {
+    let model: Rc<VecModel<BookmarkInfo>> = Rc::new(VecModel::default());
+    rebuild_bookmarks_model(&model, &data.borrow());
+    app.set_bookmarks(model.clone().into());
+    wire_bookmarks(app, manager, data, &model);
+}
+
+/// Reconstrói o `VecModel<BookmarkInfo>` (a barra de favoritos do Slint) a partir do `AppData`.
+fn rebuild_bookmarks_model(model: &VecModel<BookmarkInfo>, data: &persist::AppData) {
+    let rows: Vec<BookmarkInfo> = data
+        .bookmarks
+        .iter()
+        .map(|bm| BookmarkInfo {
+            title: bm.title.as_str().into(),
+            url: bm.url.as_str().into(),
+        })
+        .collect();
+    model.set_vec(rows);
+}
+
+/// Registra os callbacks dos favoritos (★ adiciona a página atual; abrir/remover por índice). Mutam o
+/// `AppData` (`borrow_mut` FORA do spin), persistem em disco e reconstroem a barra. Abrir carrega a URL
+/// na aba ativa.
+fn wire_bookmarks(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+    model: &Rc<VecModel<BookmarkInfo>>,
+) {
+    // ★ adiciona a página da aba ativa (url + título), sem duplicar a mesma URL.
+    let (mgr, dat, mdl) = (manager.clone(), data.clone(), model.clone());
+    app.on_add_bookmark(move || {
+        let Some((url, title)) = active_url_title(&mgr) else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        {
+            let mut d = dat.borrow_mut();
+            if d.bookmarks.iter().any(|bm| bm.url == url) {
+                eprintln!("[m4] favorito já existe: {url}");
+                return;
+            }
+            let title = if title.is_empty() { url.clone() } else { title };
+            d.bookmarks.push(persist::Bookmark { title, url });
+            persist::save_bookmarks(&d.bookmarks);
+        }
+        rebuild_bookmarks_model(&mdl, &dat.borrow());
+    });
+
+    // Abrir um favorito = carregar sua URL na aba ativa.
+    let (mgr, dat) = (manager.clone(), data.clone());
+    app.on_open_bookmark(move |index| {
+        let url = dat
+            .borrow()
+            .bookmarks
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .map(|bm| bm.url.clone());
+        if let Some(parsed) = url.as_deref().and_then(parse_user_url) {
+            with_active_webview(&mgr, |wv| wv.load(parsed.clone()));
+        }
+    });
+
+    // Remover um favorito (persistido).
+    let (dat, mdl) = (data.clone(), model.clone());
+    app.on_remove_bookmark(move |index| {
+        let idx = usize::try_from(index).unwrap_or(usize::MAX);
+        {
+            let mut d = dat.borrow_mut();
+            if idx < d.bookmarks.len() {
+                d.bookmarks.remove(idx);
+                persist::save_bookmarks(&d.bookmarks);
+            }
+        }
+        rebuild_bookmarks_model(&mdl, &dat.borrow());
+    });
+}
+
+/// URL + título da aba ativa (clones), se o manager subiu. Usado p/ adicionar favorito.
+fn active_url_title(manager: &Rc<RefCell<Option<TabManager>>>) -> Option<(String, String)> {
+    let guard = manager.borrow();
+    let tab = guard.as_ref()?.active_tab()?;
+    // Vincula os clones a locais p/ os temporários `Ref` dropparem ANTES de `guard` (ordem de drop).
+    let url = tab.state.url.borrow().clone();
+    let title = tab.state.title.borrow().clone();
+    Some((url, title))
+}
+
 /// Integra (pós-spin) as abas que `window.open` enfileirou em `pending`: registra cada uma no
 /// `TabManager` (com seu `TabState`) e ativa a última. `borrow_mut` do manager é seguro aqui — roda no
 /// começo do tick, FORA do `spin_event_loop`. No-op se a fila está vazia.
@@ -1107,8 +1201,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_tabs(tabs_model.clone().into());
     wire_tabs(&app, &manager, &tabs_model, &sink, &web_size, &chrome_dirty);
 
-    // Driver de evidência das abas (no-op sem `BASEDBROWSER_TAB_TEST`); manter o timer vivo.
+    // M4: barra de favoritos (persistida), populada dos favoritos carregados no start.
+    setup_bookmarks(&app, &manager, &app_data);
+
+    // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
     let _tab_test = install_tab_test(&app, &manager);
+    let _bm_test = install_bookmark_test(&app);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -1275,6 +1373,25 @@ fn install_tab_test(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>)
                 }
                 9 => log_tab_summary(&mgr),
                 _ => {}
+            }
+        },
+    );
+    Some(timer)
+}
+
+/// Driver de evidência dos favoritos (`BASEDBROWSER_BOOKMARK_TEST=1`): invoca `add-bookmark` da página
+/// atual após o load (~3 s), p/ provar persistência num smoke test não-interativo. Mantenha o `Timer`.
+fn install_bookmark_test(app: &MainWindow) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_BOOKMARK_TEST")?;
+    let timer = Timer::default();
+    let weak = app.as_weak();
+    timer.start(
+        TimerMode::SingleShot,
+        Duration::from_millis(3000),
+        move || {
+            if let Some(app) = weak.upgrade() {
+                app.invoke_add_bookmark();
+                eprintln!("[bmtest] add-bookmark invocado (favorita a página atual)");
             }
         },
     );
