@@ -310,6 +310,17 @@ impl WebViewDelegate for Embedder {
         self.chrome_dirty.set(true);
     }
 
+    /// M9 (ADR-0012): o favicon mudou. Lê a imagem decodificada (`WebView::favicon`), converte p/
+    /// `slint::Image` e guarda no `TabState` (roteado por id); o loop a reflete na barra de abas.
+    /// Interior-mutável + `chrome_dirty` (invariante anti-reentrância do ADR-0007).
+    fn notify_favicon_changed(&self, webview: WebView) {
+        let icon = webview.favicon().and_then(|img| favicon_to_slint(&img));
+        if let Some(state) = self.state_for(webview.id()) {
+            *state.favicon.borrow_mut() = icon;
+        }
+        self.chrome_dirty.set(true);
+    }
+
     /// `window.open`/`target=_blank`: o conteúdo pediu uma `WebView` nova. Construímos AQUI (com um
     /// offscreen próprio derivado do pai, que está corrente durante o spin) — guardar o handle vivo é
     /// obrigatório, senão a `WebView` é destruída na hora. Mas adiamos REGISTRÁ-la como aba: empilhamos
@@ -637,6 +648,8 @@ struct TabState {
     /// M9: zoom de página (1.0 = 100%); espelha `WebView::page_zoom`. Inicializado em `open_tab`
     /// (o `Default` daria 0.0). Mostrado no menu ⋯ e ajustado por Ctrl +/−/0.
     page_zoom: Cell<f32>,
+    /// M9: favicon da página, já convertido p/ `slint::Image`; `None` até o Servo entregar.
+    favicon: RefCell<Option<slint::Image>>,
 }
 
 /// Uma aba: a `WebView` do Servo + seu `OffscreenRenderingContext` (FBO PRÓPRIO, derivado do mesmo
@@ -968,6 +981,44 @@ fn home_page_url() -> Result<Url, String> {
 }
 
 /// Frame inicial (cor sólida) antes do Servo produzir o primeiro frame.
+/// M9 (ADR-0012): converte o favicon do Servo (`servo::Image`, re-export de `embedder_traits`) p/
+/// `slint::Image`. O Servo entrega RGBA8/BGRA8; convertemos p/ RGBA8 (swap R/B no caso BGRA). Sem dep
+/// nova (a troca é à mão). O un-premultiply é dispensado (favicons ~opacos; diferença só em bordas
+/// semitransparentes de um ícone de 15px — caveat aceito). `None` em formato não-RGBA/dimensão zero.
+fn favicon_to_slint(img: &servo::Image) -> Option<slint::Image> {
+    if img.width == 0 || img.height == 0 {
+        return None;
+    }
+    let swap_rb = match img.format {
+        servo::PixelFormat::RGBA8 => false,
+        servo::PixelFormat::BGRA8 => true,
+        _ => return None,
+    };
+    let src = img.data();
+    let w = usize::try_from(img.width).ok()?;
+    let h = usize::try_from(img.height).ok()?;
+    let expected = w.checked_mul(h)?.checked_mul(4)?;
+    if src.len() < expected {
+        return None;
+    }
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(img.width, img.height);
+    for (d, s) in buffer
+        .make_mut_bytes()
+        .chunks_exact_mut(4)
+        .zip(src.chunks_exact(4))
+    {
+        if swap_rb {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = s[3];
+        } else {
+            d.copy_from_slice(s);
+        }
+    }
+    Some(Image::from_rgba8(buffer))
+}
+
 fn placeholder_frame(width: u32, height: u32) -> Image {
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     let fill = Rgba8Pixel {
@@ -1433,8 +1484,8 @@ fn rebuild_tabs_model(model: &VecModel<TabInfo>, manager: &TabManager) {
         .map(|(i, tab)| TabInfo {
             title: tab_label(&tab.state.title.borrow(), &tab.state.url.borrow()).into(),
             active: i == manager.active,
-            // M9: favicon — vazio por ora; preenchido em T8 (notify_favicon_changed).
-            icon: slint::Image::default(),
+            // M9: favicon da aba (vazio → o Slint mostra o dot placeholder).
+            icon: tab.state.favicon.borrow().clone().unwrap_or_default(),
         })
         .collect();
     model.set_vec(rows);
