@@ -19,9 +19,13 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use devtools_client::NetRecord;
+
+mod devtools_client;
 mod gpu_bridge;
 mod input;
 mod persist;
@@ -172,7 +176,6 @@ struct Embedder {
 /// durante o `spin_event_loop`), o LOOP (drena o canal de rede → models) e a UI (lê os buffers).
 /// Criado SEMPRE, mas só populado quando o servidor de devtools está ligado (`BASEDBROWSER_DEVTOOLS`).
 /// Tudo interior-mutável p/ o delegate escrever sem `borrow_mut` do `TabManager` (invariante ADR-0007).
-#[derive(Default)]
 struct DevtoolsState {
     /// Porta do servidor de devtools do Servo, capturada via `notify_devtools_server_started`. `None`
     /// até o servidor subir. Usada pelo cliente RDP (T4) e pela UI (T5). Ver [`devtools_port`].
@@ -181,8 +184,32 @@ struct DevtoolsState {
     /// `WebViewDelegate::show_console_message` — chega ao embedder INCONDICIONALMENTE (não depende do
     /// servidor de devtools). Teto FIFO [`DEVTOOLS_CONSOLE_CAP`]. Lido pela UI (T5) / driver (T6).
     console: RefCell<Vec<ConsoleLine>>,
+    /// Eventos de rede (req+resp) capturados pelo cliente RDP (T4), por upsert de `id`. O LOOP/timer
+    /// drena [`net_rx`] p/ cá; a UI (T5)/driver leem daqui.
+    net: RefCell<Vec<NetRecord>>,
     /// Console/rede mudaram → o LOOP re-sincroniza os models da UI (T5). Análogo ao `chrome_dirty`.
     dirty: Cell<bool>,
+    /// Lado-emissor do canal cliente RDP → UI. O delegate o CLONA para a thread do cliente.
+    net_tx: Sender<NetRecord>,
+    /// Lado-receptor (drenado pelo timer de devtools). `Option` p/ ser `take`-able caso necessário.
+    net_rx: RefCell<Option<Receiver<NetRecord>>>,
+    /// Garante 1 cliente RDP por sessão (o servidor pode emitir `notify_devtools_server_started` 1×).
+    client_spawned: Cell<bool>,
+}
+
+impl DevtoolsState {
+    fn new() -> Self {
+        let (net_tx, net_rx) = mpsc::channel();
+        Self {
+            port: Cell::new(None),
+            console: RefCell::new(Vec::new()),
+            net: RefCell::new(Vec::new()),
+            dirty: Cell::new(false),
+            net_tx,
+            net_rx: RefCell::new(Some(net_rx)),
+            client_spawned: Cell::new(false),
+        }
+    }
 }
 
 /// Uma linha do console in-app (M7): nível (`log`/`warn`/`error`/…) + texto já formatado pelo Servo.
@@ -428,6 +455,12 @@ impl ServoDelegate for Embedder {
     fn notify_devtools_server_started(&self, port: u16, _token: String) {
         self.devtools.port.set(Some(port));
         eprintln!("[m7] devtools: server started on 127.0.0.1:{port}");
+        // Sobe o cliente RDP de rede (1×) AGORA — cedo, p/ assinar os eventos de rede antes da página
+        // disparar requisições (não há snapshot p/ network-event). Spawnar thread aqui é seguro
+        // (ADR-0007): não toca o Slint nem faz borrow do TabManager.
+        if !self.devtools.client_spawned.replace(true) {
+            devtools_client::spawn(port, self.devtools.net_tx.clone());
+        }
     }
 
     /// Pedido de conexão de um cliente de devtools. O servidor está em loopback (`127.0.0.1`) e é o NOSSO
@@ -1594,7 +1627,7 @@ fn main() -> Result<(), slint::PlatformError> {
         manager: Rc::downgrade(&manager),
         chrome_dirty: chrome_dirty.clone(),
         pending_new: pending_new.clone(),
-        devtools: Rc::new(DevtoolsState::default()), // M7 (ADR-0010): inspeção (console/rede/porta)
+        devtools: Rc::new(DevtoolsState::new()), // M7 (ADR-0010): inspeção (console/rede/porta)
     });
     let logged = Rc::new(Cell::new(false));
     // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
@@ -1618,6 +1651,9 @@ fn main() -> Result<(), slint::PlatformError> {
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
     let _drivers = install_evidence_drivers(&app, &manager, &app_data, &sink);
 
+    // M7 (ADR-0010): timer que drena os eventos de rede do cliente RDP p/ o painel (T5). Manter vivo.
+    let _devtools_timer = setup_devtools(&app, &sink);
+
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
     // Slint, evitando a colisão de `make_current` que corrompia o GL (ver doc do módulo).
@@ -1625,8 +1661,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_manager = manager;
     let tick_sink = sink;
     let tick_weak = weak;
-    let tick_logged = logged;
-    let tick_web_size = web_size;
+    let (tick_logged, tick_web_size) = (logged, web_size);
     let tick_wgpu = wgpu_ctx;
     let tick_chrome_dirty = chrome_dirty;
     let tick_tabs_model = tabs_model;
@@ -1841,6 +1876,7 @@ fn install_devtools_test(
                     eprintln!("[devtoolstest] eval enviado: document.title");
                 }
                 9 => dump_devtools_console(&devtools, "console pós-eval"),
+                11 => dump_devtools_net(&devtools),
                 _ => {}
             }
         },
@@ -1855,6 +1891,66 @@ fn dump_devtools_console(devtools: &Rc<DevtoolsState>, label: &str) {
     eprintln!("[devtoolstest] {label}: {} linha(s)", buf.len());
     for line in buf.iter() {
         eprintln!("[devtoolstest] console[{}] {}", line.level, line.text);
+    }
+}
+
+/// Dumpa (TEXTO, L-008) os eventos de rede capturados pelo cliente RDP (T4) — prova o lado da RESPOSTA
+/// (método/URL/status + 1º response header + tamanho do corpo), o núcleo do M7.
+fn dump_devtools_net(devtools: &Rc<DevtoolsState>) {
+    let net = devtools.net.borrow();
+    eprintln!("[devtoolstest] rede: {} requisição(ões)", net.len());
+    for r in net.iter() {
+        let status = if r.status.is_empty() {
+            "(pendente)"
+        } else {
+            r.status.as_str()
+        };
+        eprintln!(
+            "[devtoolstest] net {} {} status={status} req_headers={} resp_headers={} body_len={}",
+            r.method,
+            r.url,
+            r.req_headers.len(),
+            r.resp_headers.len(),
+            r.resp_body.len()
+        );
+        if let Some((k, v)) = r.resp_headers.first() {
+            eprintln!("[devtoolstest] net   resp_header[0] {k}: {v}");
+        }
+    }
+}
+
+/// M7 (ADR-0010): timer dedicado que DRENA o canal do cliente RDP de rede para `devtools.net` (upsert
+/// por id) — fora do loop de render e do delegate (ADR-0007: a escrita do buffer de rede acontece só
+/// aqui, na thread de UI). No-op até o cliente conectar. (T5 reconstrói os models do painel a partir
+/// daqui.) Devolve o `Timer` (mantê-lo vivo).
+fn setup_devtools(_app: &MainWindow, sink: &Rc<Embedder>) -> Timer {
+    let devtools = sink.devtools.clone();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, Duration::from_millis(150), move || {
+        drain_devtools_net(&devtools);
+    });
+    timer
+}
+
+/// Drena o `net_rx` (`try_recv`) → upsert por `id` em `devtools.net`; marca `dirty` se algo mudou.
+fn drain_devtools_net(devtools: &Rc<DevtoolsState>) {
+    let rx_guard = devtools.net_rx.borrow();
+    let Some(rx) = rx_guard.as_ref() else {
+        return;
+    };
+    let mut net = devtools.net.borrow_mut();
+    let mut changed = false;
+    while let Ok(rec) = rx.try_recv() {
+        if let Some(existing) = net.iter_mut().find(|r| r.id == rec.id) {
+            *existing = rec;
+        } else {
+            net.push(rec);
+        }
+        changed = true;
+    }
+    drop(net);
+    if changed {
+        devtools.dirty.set(true);
     }
 }
 
