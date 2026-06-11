@@ -188,6 +188,10 @@ export component MainWindow inherits Window {
     in-out property <bool> history-open: false;
     // M9: menu overflow ⋯ (recolhe Histórico/Limpar/DevTools/Zoom/Find).
     in-out property <bool> menu-open: false;
+    // M9: find-in-page (Ctrl+F / menu ⋯). count=total de ocorrências, index=atual (1-based).
+    in-out property <bool> find-open: false;
+    in property <int> find-count: 0;
+    in property <int> find-index: 0;
     // M7 (ADR-0010): painel de devtools (console/eval + rede). Models e status vêm do Rust.
     in property <[DevConsoleLine]> dev-console;
     in property <[DevNetRow]> dev-net;
@@ -228,6 +232,9 @@ export component MainWindow inherits Window {
     callback zoom-in();
     callback zoom-out();
     callback zoom-reset();
+    // M9: find-in-page. find-in-page(query, forward) busca/navega; find-close limpa os destaques.
+    callback find-in-page(string, bool);
+    callback find-close();
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -746,6 +753,88 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // Find bar (M9): barra de busca na página, ancorada no topo-direito. Abre por Ctrl+F ou
+            // pelo menu ⋯; o TextInput foca ao aparecer (`init`). Injeção de JS no Rust (setup_find).
+            if root.find-open : Rectangle {
+                x: parent.width - self.width - 14px;
+                y: 14px;
+                width: 380px;
+                height: 46px;
+                background: Theme.bg-elevated;
+                border-radius: Theme.radius-panel;
+                border-width: 1px;
+                border-color: Theme.border;
+                drop-shadow-color: #00000070;
+                drop-shadow-blur: 24px;
+                drop-shadow-offset-y: 8px;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg-surface-2;
+                        border-radius: Theme.radius-btn;
+                        border-width: 1px;
+                        border-color: find-input.has-focus ? Theme.accent : Theme.border;
+                        find-input := TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            vertical-alignment: center;
+                            color: Theme.text-hi;
+                            font-size: 13px;
+                            single-line: true;
+                            init => { self.focus(); }
+                            edited => { root.find-in-page(self.text, true); }
+                            accepted => { root.find-in-page(self.text, true); }
+                        }
+                        if find-input.text == "" : Text {
+                            x: 10px;
+                            height: 100%;
+                            vertical-alignment: center;
+                            color: Theme.text-lo;
+                            font-size: 13px;
+                            text: "Localizar na página";
+                        }
+                    }
+                    Text {
+                        text: root.find-count > 0 ? "\{root.find-index}/\{root.find-count}" : (find-input.text == "" ? "" : "0/0");
+                        color: Theme.text-mid;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    IconBtn {
+                        width: 28px;
+                        height: 28px;
+                        glyph: "‹";
+                        glyph-size: 20px;
+                        hover-bg: Theme.bg-surface;
+                        clicked => { root.find-in-page(find-input.text, false); }
+                    }
+                    IconBtn {
+                        width: 28px;
+                        height: 28px;
+                        glyph: "›";
+                        glyph-size: 20px;
+                        hover-bg: Theme.bg-surface;
+                        clicked => { root.find-in-page(find-input.text, true); }
+                    }
+                    IconBtn {
+                        width: 28px;
+                        height: 28px;
+                        glyph: "×";
+                        glyph-size: 16px;
+                        glyph-color: Theme.text-mid;
+                        hover-bg: Theme.bg-surface;
+                        clicked => {
+                            root.find-open = false;
+                            root.find-close();
+                        }
+                    }
+                }
+            }
+
             // Menu overflow ⋯ (M9): overlay sobre a área web, ancorado no topo-direito (sob o botão ⋯).
             // Recolhe o que poluía a toolbar. Clicar fora fecha. Zoom/Find entram em T6/T7.
             if root.menu-open : Rectangle {
@@ -776,6 +865,14 @@ export component MainWindow inherits Window {
                                 root.menu-open = false;
                                 root.history-open = true;
                                 root.toggle-history();
+                            }
+                        }
+                        MenuItem {
+                            label: "Buscar na página";
+                            hint: "Ctrl+F";
+                            clicked => {
+                                root.menu-open = false;
+                                root.find-open = true;
                             }
                         }
                         MenuItem {

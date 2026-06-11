@@ -444,6 +444,141 @@ fn devtools_eval(
     });
 }
 
+/// M9 (ADR-0012): estado do find-in-page. `result` = (índice 1-based, total); (0,0) = nada/limpo.
+/// O callback (assíncrono) do `evaluate_javascript` NÃO escreve no Slint (ADR-0007): guarda aqui e
+/// marca `dirty`; o Timer de `setup_find` reflete nas props. `Cell<(i32,i32)>` (tupla Copy).
+#[derive(Default)]
+struct FindState {
+    result: Cell<(i32, i32)>,
+    dirty: Cell<bool>,
+}
+
+/// M9: script de find-in-page injetado na ABA ATIVA (`evaluate_javascript`). O Servo 0.2.0 não expõe
+/// busca nativa → fazemos em JS (TreeWalker): destaca todas as ocorrências (`<mark class=bb-find>`),
+/// navega entre elas (índice em `window.__bbi`, query em `window.__bbq`) e devolve "idx,count". Usa
+/// `__Q__`/`__F__` (substituídos por `find_script`) p/ não brigar com as chaves no `format!`.
+const FIND_JS_TEMPLATE: &str = r"(function(q, forward){
+var P='bb-find';
+var old=document.querySelectorAll('mark.'+P);
+for(var k=0;k<old.length;k++){var m=old[k];var t=document.createTextNode(m.textContent);m.parentNode.replaceChild(t,m);}
+if(q===''){window.__bbq='';window.__bbi=0;return '0,0';}
+var lc=q.toLowerCase();
+var prev=window.__bbq; window.__bbq=q;
+var nodes=[];
+var w=document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+var nd; while(nd=w.nextNode()){
+  var v=nd.nodeValue; if(!v||!v.trim())continue;
+  var p=nd.parentNode; if(!p)continue;
+  var tag=p.nodeName; if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||tag==='TEXTAREA')continue;
+  if(v.toLowerCase().indexOf(lc)===-1)continue;
+  nodes.push(nd);
+}
+var marks=[];
+for(var i2=0;i2<nodes.length;i2++){
+  var node=nodes[i2]; var text=node.nodeValue; var low=text.toLowerCase();
+  var frag=document.createDocumentFragment(); var last=0; var pos;
+  while((pos=low.indexOf(lc,last))!==-1){
+    if(pos>last)frag.appendChild(document.createTextNode(text.slice(last,pos)));
+    var mk=document.createElement('mark'); mk.className=P;
+    mk.style.backgroundColor='#6c5ce7'; mk.style.color='#fff'; mk.style.borderRadius='2px';
+    mk.textContent=text.slice(pos,pos+q.length);
+    frag.appendChild(mk); marks.push(mk);
+    last=pos+q.length;
+  }
+  if(last<text.length)frag.appendChild(document.createTextNode(text.slice(last)));
+  node.parentNode.replaceChild(frag,node);
+}
+var count=marks.length;
+if(count===0){window.__bbi=0;return '0,0';}
+var idx;
+if(prev!==q){idx=0;}else{idx=(window.__bbi||0)+(forward?1:-1);}
+if(idx<0)idx=count-1; if(idx>=count)idx=0;
+window.__bbi=idx;
+for(var j=0;j<marks.length;j++){marks[j].style.backgroundColor=(j===idx)?'#ff8a3d':'#6c5ce7';}
+try{marks[idx].scrollIntoView({block:'center'});}catch(e){marks[idx].scrollIntoView();}
+return (idx+1)+','+count;
+})(__Q__, __F__)";
+
+/// M9: remove os destaques do find (ao fechar a barra / trocar de busca p/ vazio).
+const FIND_CLEAR_JS: &str = r"(function(){var P='bb-find';var old=document.querySelectorAll('mark.'+P);for(var k=0;k<old.length;k++){var m=old[k];var t=document.createTextNode(m.textContent);m.parentNode.replaceChild(t,m);}window.__bbq='';window.__bbi=0;})()";
+
+/// M9: instancia o script de find com a `query` (escapada via JSON → string literal JS segura) e o
+/// sentido (`forward`).
+fn find_script(query: &str, forward: bool) -> String {
+    let q = serde_json::to_string(query).unwrap_or_else(|_| "\"\"".to_string());
+    FIND_JS_TEMPLATE
+        .replace("__Q__", &q)
+        .replace("__F__", if forward { "true" } else { "false" })
+}
+
+/// M9: parseia o "idx,count" devolvido pelo script de find. `None` se o JS errou / formato inesperado.
+fn parse_find_result(value: &JSValue) -> Option<(i32, i32)> {
+    let s = match value {
+        JSValue::String(s) => s.clone(),
+        other => format_jsvalue(other),
+    };
+    let (idx, count) = s.split_once(',')?;
+    Some((idx.trim().parse().ok()?, count.trim().parse().ok()?))
+}
+
+/// M9 (ADR-0012): liga o find-in-page (Ctrl+F / menu ⋯). `find-in-page(query, forward)` injeta o
+/// script na aba ativa; o callback (assíncrono, NÃO toca o Slint — ADR-0007) guarda "idx,count" no
+/// `FindState` + `dirty`, e o Timer reflete nas props `find-index`/`find-count`. `find-close` limpa os
+/// destaques e zera o contador. Devolve o Timer (mantê-lo vivo).
+fn setup_find(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>) -> Timer {
+    let find = Rc::new(FindState::default());
+
+    let mgr = manager.clone();
+    let st = find.clone();
+    app.on_find_in_page(move |query, forward| {
+        let script = find_script(query.as_str(), forward);
+        let st = st.clone();
+        with_active_webview(&mgr, move |wv| {
+            wv.evaluate_javascript(script, move |res| {
+                if let Ok(value) = res {
+                    if let Some(pair) = parse_find_result(&value) {
+                        st.result.set(pair);
+                        st.dirty.set(true);
+                    }
+                }
+            });
+        });
+    });
+
+    let mgr = manager.clone();
+    let st = find.clone();
+    app.on_find_close(move || {
+        with_active_webview(&mgr, |wv| {
+            wv.evaluate_javascript(FIND_CLEAR_JS.to_string(), |_res| {});
+        });
+        st.result.set((0, 0));
+        st.dirty.set(true);
+    });
+
+    let timer = Timer::default();
+    let weak = app.as_weak();
+    timer.start(TimerMode::Repeated, Duration::from_millis(80), move || {
+        if find.dirty.replace(false) {
+            if let Some(app) = weak.upgrade() {
+                let (idx, count) = find.result.get();
+                app.set_find_index(idx);
+                app.set_find_count(count);
+            }
+        }
+    });
+    timer
+}
+
+/// M9: liga os painéis dirigidos por injeção de JS (devtools M7 + find M9) numa só chamada (mantém
+/// `main` enxuto). Os dois Timers devem ser mantidos vivos pelo chamador.
+fn setup_panels(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    sink: &Rc<Embedder>,
+) -> (Timer, Timer) {
+    (setup_devtools(app, manager, sink), setup_find(app, manager))
+}
+
 /// `ServoDelegate` (M7, ADR-0010): hooks de NÍVEL-SERVO (não por-`WebView`). Usado SÓ para o servidor
 /// de devtools — setado via `servo.set_delegate` apenas quando o devtools está ligado. Roda durante o
 /// `spin_event_loop`; só mexe em estado interior-mutável (`devtools`), nunca escreve no Slint
@@ -1712,8 +1847,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
     let _drivers = install_evidence_drivers(&app, &manager, &app_data, &sink);
 
-    // M7 (ADR-0010): liga o painel de devtools (models + callbacks + drenagem da rede). Manter vivo.
-    let _devtools_timer = setup_devtools(&app, &manager, &sink);
+    // M7 (devtools) + M9 (find): painéis dirigidos por injeção de JS. Manter os timers vivos.
+    let _panels = setup_panels(&app, &manager, &sink);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
