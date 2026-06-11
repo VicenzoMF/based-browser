@@ -19,6 +19,19 @@ pub fn device_point(x: f32, y: f32) -> WebViewPoint {
     DevicePoint::new(x, y).into()
 }
 
+/// M9: o `text` do `KeyEvent` corresponde à tecla **Tab** do Slint? (atalho Ctrl+Tab). O code físico
+/// não é exposto, então comparamos contra a representação do `slint::platform::Key` (como `key_from_text`).
+#[must_use]
+pub fn is_tab(text: &str) -> bool {
+    text == SharedString::from(SlintKey::Tab).as_str()
+}
+
+/// M9: idem p/ **Escape** (fecha a find bar quando aberta).
+#[must_use]
+pub fn is_escape(text: &str) -> bool {
+    text == SharedString::from(SlintKey::Escape).as_str()
+}
+
 /// Traduz um evento de pointer do Slint para `InputEvent` do Servo.
 ///
 /// `kind`: 0 = down, 1 = up, qualquer outro = move (notificação de movimento, sem botão).

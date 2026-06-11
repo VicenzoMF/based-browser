@@ -1165,6 +1165,114 @@ fn apply_zoom(
     }
 }
 
+/// M9: fecha a ABA ATIVA (Ctrl+W). Reusa o callback `close-tab(idx)` do Slint (que checa limites e
+/// recusa fechar a última). `try_from` evita o cast truncante usize→i32 (lint do projeto).
+fn close_active_tab(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>) {
+    let idx = manager.borrow().as_ref().map(|m| m.active);
+    if let Some(idx) = idx.and_then(|i| i32::try_from(i).ok()) {
+        app.invoke_close_tab(idx);
+    }
+}
+
+/// M9: vai p/ a PRÓXIMA aba, circular (Ctrl+Tab). Reusa `select-tab(idx)`.
+fn cycle_tab(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>) {
+    let next = manager
+        .borrow()
+        .as_ref()
+        .and_then(|m| (!m.tabs.is_empty()).then(|| (m.active + 1) % m.tabs.len()));
+    if let Some(next) = next.and_then(|n| i32::try_from(n).ok()) {
+        app.invoke_select_tab(next);
+    }
+}
+
+/// M9: intercepta atalhos de CHROME no caminho de teclado, ANTES de repassar ao Servo (a tecla é
+/// "roubada" da página). Devolve `true` se a tecla é um atalho (não repassar — swallow no press E no
+/// release). A AÇÃO roda só no press inicial (`pressed && !repeat`). Reusa os callbacks existentes
+/// (`invoke_*`). Ctrl+L foca a omnibox (callback `focus-url-bar`, tratado no Slint); Ctrl+F abre a
+/// find bar; Escape a fecha. Os atalhos usam `text`+modificadores (o code físico não é exposto, M2).
+fn handle_chrome_key(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    text: &str,
+    pressed: bool,
+    ctrl: bool,
+    repeat: bool,
+) -> bool {
+    // Escape fecha a find bar (se aberta); senão segue p/ a página.
+    if input::is_escape(text) {
+        if app.get_find_open() {
+            if pressed {
+                app.set_find_open(false);
+                app.invoke_find_close();
+            }
+            return true;
+        }
+        return false;
+    }
+    if !ctrl {
+        return false;
+    }
+    let act = pressed && !repeat; // ação só no press inicial; release é só swallow
+                                  // Ctrl+Tab: próxima aba.
+    if input::is_tab(text) {
+        if act {
+            cycle_tab(app, manager);
+        }
+        return true;
+    }
+    match text {
+        "t" | "T" => {
+            if act {
+                app.invoke_new_tab();
+            }
+            true
+        }
+        "w" | "W" => {
+            if act {
+                close_active_tab(app, manager);
+            }
+            true
+        }
+        "l" | "L" => {
+            if act {
+                app.invoke_focus_url_bar();
+            }
+            true
+        }
+        "r" | "R" => {
+            if act {
+                app.invoke_reload();
+            }
+            true
+        }
+        "f" | "F" => {
+            if act {
+                app.set_find_open(true);
+            }
+            true
+        }
+        "+" | "=" => {
+            if act {
+                app.invoke_zoom_in();
+            }
+            true
+        }
+        "-" | "_" => {
+            if act {
+                app.invoke_zoom_out();
+            }
+            true
+        }
+        "0" => {
+            if act {
+                app.invoke_zoom_reset();
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Registra os callbacks do chrome (Slint) que encaminham input e navegação à ABA ATIVA. Cada handler
 /// captura um clone do `manager` compartilhado; se o evento chegar antes do init lazy, é ignorado com
 /// segurança. Input/navegação sempre vão para a aba ativa (M4).
@@ -1206,7 +1314,15 @@ fn wire_chrome(
     });
 
     let mgr = manager.clone();
+    let weak = app.as_weak();
     app.on_forward_key(move |text, pressed, ctrl, shift, alt, meta, repeat| {
+        // M9: atalhos de chrome (Ctrl+T/W/L/R/Tab/F, Ctrl +/−/0, Esc) são interceptados ANTES do
+        // repasse — "roubam" a tecla da página. O resto segue normal p/ o Servo (digitação intacta).
+        if let Some(app) = weak.upgrade() {
+            if handle_chrome_key(&app, &mgr, text.as_str(), pressed, ctrl, repeat) {
+                return;
+            }
+        }
         with_active_webview(&mgr, |wv| {
             wv.notify_input_event(input::key_input_event(
                 text.as_str(),

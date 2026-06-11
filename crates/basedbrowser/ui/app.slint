@@ -235,6 +235,8 @@ export component MainWindow inherits Window {
     // M9: find-in-page. find-in-page(query, forward) busca/navega; find-close limpa os destaques.
     callback find-in-page(string, bool);
     callback find-close();
+    // M9: foco da omnibox (Ctrl+L) — o Rust invoca; tratado internamente no Slint (handler abaixo).
+    callback focus-url-bar();
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -247,6 +249,11 @@ export component MainWindow inherits Window {
     preferred-width: 1024px;
     preferred-height: 768px;
     background: Theme.bg-base;
+
+    // M9: Ctrl+L (Rust invoca `focus-url-bar`) → foca a omnibox.
+    focus-url-bar => {
+        omni-input.focus();
+    }
 
     VerticalLayout {
         padding: 0;
