@@ -456,14 +456,45 @@ fn init_manager(
         gpu_disabled: Cell::new(false),
         pending,
     };
-    manager.open_tab(
-        web_size,
-        window.scale_factor(),
-        home_page_url()?,
-        sink,
-        true,
-    );
+    // M4 (T7): restaura as abas da sessão salva; se não houver (ou nenhuma URL válida), abre a home.
+    if !restore_session(&mut manager, web_size, window.scale_factor(), sink) {
+        manager.open_tab(
+            web_size,
+            window.scale_factor(),
+            home_page_url()?,
+            sink,
+            true,
+        );
+    }
     Ok(manager)
+}
+
+/// Restaura as abas da sessão salva (`session.json`): abre cada URL como uma aba (de fundo) e ativa a
+/// que estava ativa. Devolve `true` se abriu ao menos uma aba (senão o chamador abre a home). Cada aba
+/// nasce escondida/throttled; o `set_active` final mostra/foca a ativa.
+fn restore_session(
+    manager: &mut TabManager,
+    web_size: dpi::PhysicalSize<u32>,
+    scale: f32,
+    sink: &Rc<Embedder>,
+) -> bool {
+    let Some(session) = persist::load_session().filter(|s| !s.tabs.is_empty()) else {
+        return false;
+    };
+    let mut opened = 0usize;
+    for raw in &session.tabs {
+        if let Some(url) = parse_user_url(raw) {
+            manager.open_tab(web_size, scale, url, sink, false);
+            opened += 1;
+        }
+    }
+    if opened == 0 {
+        return false;
+    }
+    let active = session.active.min(opened - 1);
+    manager.set_active(active);
+    eprintln!("[m4] sessão restaurada: {opened} aba(s), ativa={active}");
+    true
 }
 
 /// Converte um comprimento físico (`f32`, vindo do Slint como `physical-length`) para pixels,
@@ -1224,7 +1255,10 @@ fn lazy_init_manager(
     };
     match init_manager(app.window(), sink, web_size, wgpu.clone()) {
         Ok(m) => {
-            eprintln!("[m4] motor multi-aba iniciado (1 aba; offscreen GL sobre a janela)");
+            eprintln!(
+                "[m4] motor multi-aba iniciado ({} aba(s); offscreen GL sobre a janela)",
+                m.tabs.len()
+            );
             *manager.borrow_mut() = Some(m);
         }
         Err(e) => eprintln!("[m1] FALHA ao iniciar o runtime do Servo: {e}"),
@@ -1262,8 +1296,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // M3 (ADR-0005): captura o device wgpu/Vulkan que o Slint cria (ver `capture_wgpu_device`).
     let wgpu_ctx = capture_wgpu_device(&app);
 
-    // M4 (ADR-0007): carrega o estado persistido (favoritos/histórico) do disco e loga a sessão salva.
-    // A restauração de abas a partir da sessão chega na T7; aqui já carregamos e logamos.
+    // M4 (ADR-0007): carrega o estado persistido (favoritos/histórico). A restauração de abas da
+    // sessão salva é feita no `init_manager` (T7).
     let app_data = load_persisted_state();
 
     let weak = app.as_weak();
@@ -1391,8 +1425,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let _exit_timer = install_exit_timer();
 
     let result = app.run();
-    // M4: ao sair, persiste a sessão (URLs das abas + índice da ativa). A restauração no start chega
-    // na T7. O histórico já é gravado a cada visita.
+    // M4 (T7): ao sair, persiste a sessão (URLs das abas + índice da ativa), restaurada no próximo
+    // start (`init_manager`). O histórico já é gravado a cada visita.
     save_session_on_exit(&exit_manager);
     result
 }
@@ -1574,24 +1608,17 @@ fn install_exit_timer() -> Option<Timer> {
     Some(timer)
 }
 
-/// Carrega o estado persistido (favoritos/histórico) e loga o que encontrou (incl. a sessão salva,
-/// cuja restauração chega na T7). Devolve o estado vivo compartilhado com o `Embedder`.
+/// Carrega o estado persistido (favoritos/histórico) e loga a contagem. A sessão de abas é carregada
+/// e restaurada no `init_manager` (T7). Devolve o estado vivo compartilhado com o `Embedder`.
 fn load_persisted_state() -> Rc<RefCell<persist::AppData>> {
     let data = Rc::new(RefCell::new(persist::AppData::load()));
-    {
-        let d = data.borrow();
-        eprintln!(
-            "[m4] persistência: {} favorito(s), {} entrada(s) no histórico",
-            d.bookmarks.len(),
-            d.history.len()
-        );
-    }
-    if let Some(session) = persist::load_session() {
-        eprintln!(
-            "[m4] sessão salva encontrada: {} aba(s) (restauração chega na T7)",
-            session.tabs.len()
-        );
-    }
+    let d = data.borrow();
+    eprintln!(
+        "[m4] persistência: {} favorito(s), {} entrada(s) no histórico",
+        d.bookmarks.len(),
+        d.history.len()
+    );
+    drop(d);
     data
 }
 
