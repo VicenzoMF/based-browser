@@ -3,7 +3,7 @@
 // cresce no M4 (barra de abas + favoritos + painel de histórico); separar a UI do Rust dá tooling
 // (LSP/preview) e mantém o `main.rs` focado na lógica. AD-008 ("sem build.rs") fica registrado como
 // superado pelo ADR-0007 — a decisão de decodificar eventos a primitivos no `.slint` (M2) é mantida.
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 
 // Uma aba na barra de abas (M4). O Rust constrói um `VecModel<TabInfo>` a partir do `TabManager`
 // (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual.
@@ -24,6 +24,23 @@ export struct BookmarkInfo {
 export struct HistoryItem {
     title: string,
     url: string,
+}
+
+// M7 (ADR-0010): painel de devtools. Linha de console (nível + texto) e linha de rede (req+resp,
+// headers/payload já achatados em string pelo Rust — Slint não modela bem listas de tuplas aninhadas).
+export struct DevConsoleLine {
+    level: string,
+    text: string,
+}
+
+export struct DevNetRow {
+    method: string,
+    url: string,
+    status: string,
+    mime: string,
+    req-headers: string,
+    resp-headers: string,
+    body: string,
 }
 
 // Chrome do M2/M4: barra de abas + barra de navegação + área web. O `.slint` apenas DECODIFICA cada
@@ -49,6 +66,13 @@ export component MainWindow inherits Window {
     in property <[HistoryItem]> suggestions;
     // Visibilidade do painel de histórico (alternada pelo botão ☰; o Rust também pode fechá-lo).
     in-out property <bool> history-open: false;
+    // M7 (ADR-0010): painel de devtools (console/eval + rede). Models e status vêm do Rust.
+    in property <[DevConsoleLine]> dev-console;
+    in property <[DevNetRow]> dev-net;
+    in property <string> dev-status: "";
+    in-out property <bool> devtools-open: false;
+    in-out property <int> dev-tab: 0; // 0 = console, 1 = rede
+    in-out property <int> dev-net-sel: -1; // linha de rede selecionada (detalhe)
 
     // Chrome -> Rust.
     callback load-url(string);
@@ -73,6 +97,11 @@ export component MainWindow inherits Window {
     // M6: limpar dados de navegação (cookies + Web Storage do Servo + nosso histórico; preserva
     // favoritos e a sessão de abas).
     callback clear-browsing-data();
+    // M7: devtools. toggle-devtools (re)abre o painel (Rust atualiza os models); dev-eval roda JS na
+    // aba ativa; clear-devtools limpa os buffers de console/rede.
+    callback toggle-devtools();
+    callback dev-eval(string);
+    callback clear-devtools();
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -191,6 +220,14 @@ export component MainWindow inherits Window {
             Button {
                 text: "Limpar dados";
                 clicked => { root.clear-browsing-data(); }
+            }
+            // M7: abre/fecha o painel de devtools (console/eval + rede).
+            Button {
+                text: "DevTools";
+                clicked => {
+                    root.devtools-open = !root.devtools-open;
+                    root.toggle-devtools();
+                }
             }
             if root.loading : Text {
                 vertical-alignment: center;
@@ -374,6 +411,162 @@ export component MainWindow inherits Window {
                                     color: #8a8a9a;
                                     overflow: elide;
                                     text: h.url;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Painel de devtools (M7, ADR-0010): overlay sobre a área web. Aba Console (console.log ao
+            // vivo + REPL de eval, in-process) e aba Rede (req+resp do cliente RDP, com detalhe de
+            // headers/payload). Os models e o status vêm do Rust (setup_devtools).
+            if root.devtools-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: #0d0d12;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "DevTools";
+                            color: #ffffff;
+                            font-size: 20px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.dev-status;
+                            color: #8a8a9a;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button {
+                            text: root.dev-tab == 0 ? "● Console" : "Console";
+                            clicked => { root.dev-tab = 0; }
+                        }
+                        Button {
+                            text: root.dev-tab == 1 ? "● Rede" : "Rede";
+                            clicked => { root.dev-tab = 1; }
+                        }
+                        Button {
+                            text: "Limpar";
+                            clicked => { root.clear-devtools(); }
+                        }
+                        Button {
+                            text: "Fechar";
+                            clicked => { root.devtools-open = false; }
+                        }
+                    }
+
+                    // Aba CONSOLE: lista de mensagens + REPL de eval.
+                    if root.dev-tab == 0 : VerticalLayout {
+                        spacing: 8px;
+                        ListView {
+                            for c in root.dev-console : HorizontalLayout {
+                                height: 22px;
+                                padding-left: 8px;
+                                spacing: 8px;
+                                Text {
+                                    text: c.level;
+                                    width: 58px;
+                                    vertical-alignment: center;
+                                    color: c.level == "error" ? #ff8a8a
+                                        : c.level == "warn" ? #ffd47a
+                                        : c.level == "result" ? #8affc0
+                                        : c.level == "eval" ? #9ab8ff
+                                        : #9aa0b4;
+                                }
+                                Text {
+                                    text: c.text;
+                                    color: #e6e6f0;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        LineEdit {
+                            placeholder-text: "Avaliar JavaScript e teclar Enter (ex.: document.title)";
+                            accepted(t) => { root.dev-eval(t); self.text = ""; }
+                        }
+                    }
+
+                    // Aba REDE: lista de requisições + detalhe (headers/payload) da selecionada.
+                    if root.dev-tab == 1 : VerticalLayout {
+                        spacing: 8px;
+                        ListView {
+                            for n[idx] in root.dev-net : Rectangle {
+                                height: 26px;
+                                background: ntouch.has-hover || root.dev-net-sel == idx ? #1c1c28 : transparent;
+                                ntouch := TouchArea {
+                                    clicked => { root.dev-net-sel = idx; }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: n.method;
+                                        width: 48px;
+                                        color: #9ab8ff;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.status == "" ? "..." : n.status;
+                                        width: 80px;
+                                        color: #8affc0;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.url;
+                                        color: #e6e6f0;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : ScrollView {
+                            height: 40%;
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                alignment: start;
+                                Text {
+                                    text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
+                                    color: #ffffff;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Status: " + root.dev-net[root.dev-net-sel].status + "    MIME: " + root.dev-net[root.dev-net-sel].mime;
+                                    color: #c0c4d8;
+                                }
+                                Text {
+                                    text: "— Request headers —";
+                                    color: #8a8a9a;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].req-headers;
+                                    color: #c0c4d8;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "— Response headers —";
+                                    color: #8a8a9a;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].resp-headers;
+                                    color: #c0c4d8;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "— Body —";
+                                    color: #8a8a9a;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].body;
+                                    color: #c0c4d8;
+                                    wrap: word-wrap;
                                 }
                             }
                         }

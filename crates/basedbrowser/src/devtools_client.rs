@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -69,16 +70,24 @@ fn run(port: u16, tx: &Sender<NetRecord>) -> io::Result<()> {
 
     // 1) Ator `root` (esperamos; o servidor faz peek-timeout do token e então o embedder autoriza).
     let _root = read_packet(&mut reader)?;
-    // 2) listTabs → ator da 1ª aba.
-    write_packet(&mut writer, &json!({ "to": "root", "type": "listTabs" }))?;
-    let tab_actor = next_matching(&mut reader, |v| {
-        v.get("tabs")
-            .and_then(|t| t.as_array())
+    // 2) listTabs → ator da 1ª aba. RETRY: o cliente sobe cedo (notify_devtools_server_started) e a aba
+    //    pode ainda não estar registrada no devtools → `tabs:[]`. Repetimos até aparecer uma aba (sem
+    //    isso o handshake travaria esperando um `tabs[0]` que nunca vem — corrida de timing).
+    let tab_actor = loop {
+        write_packet(&mut writer, &json!({ "to": "root", "type": "listTabs" }))?;
+        let reply = next_matching(&mut reader, |v| v.get("tabs").map(|_| v.clone()))?;
+        let actor = reply
+            .get("tabs")
+            .and_then(Value::as_array)
             .and_then(|a| a.first())
             .and_then(|t| t.get("actor"))
             .and_then(Value::as_str)
-            .map(str::to_owned)
-    })?;
+            .map(str::to_owned);
+        if let Some(actor) = actor {
+            break actor;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
     // 3) getWatcher → o watcher vem no campo `actor` (flatten) do reply cujo `from` é a aba.
     write_packet(
         &mut writer,

@@ -50,7 +50,7 @@ use url::Url;
 // NÃO usamos `build.rs`/`include_modules!()` de propósito: aquele caminho injeta o `app.rs` gerado
 // como FONTE do crate, e o código gerado usa `.unwrap()`/`.expect()` à vontade → trombaria com os
 // lints `deny` do projeto; a expansão da macro inline (crate externo) é isenta do clippy. Ver ADR-0007.
-slint::slint!(export { MainWindow, TabInfo, BookmarkInfo, HistoryItem } from "../ui/app.slint";);
+slint::slint!(export { MainWindow, TabInfo, BookmarkInfo, HistoryItem, DevConsoleLine, DevNetRow } from "../ui/app.slint";);
 
 /// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
 /// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
@@ -1651,8 +1651,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
     let _drivers = install_evidence_drivers(&app, &manager, &app_data, &sink);
 
-    // M7 (ADR-0010): timer que drena os eventos de rede do cliente RDP p/ o painel (T5). Manter vivo.
-    let _devtools_timer = setup_devtools(&app, &sink);
+    // M7 (ADR-0010): liga o painel de devtools (models + callbacks + drenagem da rede). Manter vivo.
+    let _devtools_timer = setup_devtools(&app, &manager, &sink);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -1838,7 +1838,7 @@ fn install_evidence_drivers(
         install_history_test(app),
         install_persist_test(manager),
         install_clear_test(app, manager, data),
-        install_devtools_test(manager, sink),
+        install_devtools_test(app, manager, sink),
     ]
     .into_iter()
     .flatten()
@@ -1851,11 +1851,13 @@ fn install_evidence_drivers(
 /// registros de rede capturados pelo cliente RDP (T4). Etapas escalonadas em ticks de 1 s. No-op sem a
 /// env. Mantenha o `Timer`. A página/subrecurso vêm de `scripts/m7/` (T6).
 fn install_devtools_test(
+    app: &MainWindow,
     manager: &Rc<RefCell<Option<TabManager>>>,
     sink: &Rc<Embedder>,
 ) -> Option<Timer> {
     std::env::var_os("BASEDBROWSER_DEVTOOLS_TEST")?;
     let timer = Timer::default();
+    let weak = app.as_weak();
     let mgr = manager.clone();
     let devtools = sink.devtools.clone();
     let step = Cell::new(0u32);
@@ -1877,6 +1879,21 @@ fn install_devtools_test(
                 }
                 9 => dump_devtools_console(&devtools, "console pós-eval"),
                 11 => dump_devtools_net(&devtools),
+                // Abre o painel (força refresh dos models do Slint) p/ provar o binding de UI.
+                12 => {
+                    if let Some(app) = weak.upgrade() {
+                        app.invoke_toggle_devtools();
+                    }
+                }
+                13 => {
+                    if let Some(app) = weak.upgrade() {
+                        eprintln!(
+                            "[devtoolstest] models do painel: dev-console={} linha(s), dev-net={} linha(s)",
+                            app.get_dev_console().row_count(),
+                            app.get_dev_net().row_count()
+                        );
+                    }
+                }
                 _ => {}
             }
         },
@@ -1919,17 +1936,96 @@ fn dump_devtools_net(devtools: &Rc<DevtoolsState>) {
     }
 }
 
-/// M7 (ADR-0010): timer dedicado que DRENA o canal do cliente RDP de rede para `devtools.net` (upsert
-/// por id) — fora do loop de render e do delegate (ADR-0007: a escrita do buffer de rede acontece só
-/// aqui, na thread de UI). No-op até o cliente conectar. (T5 reconstrói os models do painel a partir
-/// daqui.) Devolve o `Timer` (mantê-lo vivo).
-fn setup_devtools(_app: &MainWindow, sink: &Rc<Embedder>) -> Timer {
+/// M7 (ADR-0010): liga o painel de devtools. Cria os models (console/rede), conecta os callbacks
+/// (eval/limpar/abrir) e instala um Timer que DRENA o canal do cliente RDP de rede para `devtools.net`
+/// e, quando algo muda (`dirty`), reconstrói os models do Slint — tudo na thread de UI, fora do loop de
+/// render e do delegate (invariante do ADR-0007). Devolve o `Timer` (mantê-lo vivo).
+fn setup_devtools(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    sink: &Rc<Embedder>,
+) -> Timer {
     let devtools = sink.devtools.clone();
+    let console_model: Rc<VecModel<DevConsoleLine>> = Rc::new(VecModel::default());
+    let net_model: Rc<VecModel<DevNetRow>> = Rc::new(VecModel::default());
+    app.set_dev_console(console_model.clone().into());
+    app.set_dev_net(net_model.clone().into());
+
+    // Avaliar JS na aba ativa (REPL).
+    let (mgr, dt) = (manager.clone(), devtools.clone());
+    app.on_dev_eval(move |script| devtools_eval(&mgr, &dt, script.to_string()));
+    // Limpar os buffers de console + rede.
+    let dt = devtools.clone();
+    app.on_clear_devtools(move || {
+        dt.console.borrow_mut().clear();
+        dt.net.borrow_mut().clear();
+        dt.dirty.set(true);
+    });
+    // Abrir o painel força um refresh dos models no próximo tick.
+    let dt = devtools.clone();
+    app.on_toggle_devtools(move || dt.dirty.set(true));
+
+    let weak = app.as_weak();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(150), move || {
         drain_devtools_net(&devtools);
+        if devtools.dirty.replace(false) {
+            if let Some(app) = weak.upgrade() {
+                rebuild_dev_models(&app, &devtools, &console_model, &net_model);
+            }
+        }
     });
     timer
+}
+
+/// Reconstrói os models do painel de devtools (console + rede) e o texto de status a partir dos buffers
+/// interior-mutáveis. Roda na thread de UI (chamado pelo Timer de [`setup_devtools`]).
+fn rebuild_dev_models(
+    app: &MainWindow,
+    devtools: &Rc<DevtoolsState>,
+    console_model: &VecModel<DevConsoleLine>,
+    net_model: &VecModel<DevNetRow>,
+) {
+    let console: Vec<DevConsoleLine> = devtools
+        .console
+        .borrow()
+        .iter()
+        .map(|l| DevConsoleLine {
+            level: l.level.into(),
+            text: l.text.as_str().into(),
+        })
+        .collect();
+    console_model.set_vec(console);
+
+    let net = devtools.net.borrow();
+    let rows: Vec<DevNetRow> = net
+        .iter()
+        .map(|r| DevNetRow {
+            method: r.method.as_str().into(),
+            url: r.url.as_str().into(),
+            status: r.status.as_str().into(),
+            mime: r.mime.as_str().into(),
+            req_headers: join_headers(&r.req_headers).into(),
+            resp_headers: join_headers(&r.resp_headers).into(),
+            body: r.resp_body.as_str().into(),
+        })
+        .collect();
+    net_model.set_vec(rows);
+
+    let status = match devtools.port.get() {
+        Some(port) => format!("servidor 127.0.0.1:{port} · {} requisição(ões)", net.len()),
+        None => "servidor desligado — rode com BASEDBROWSER_DEVTOOLS p/ ver a rede".to_string(),
+    };
+    app.set_dev_status(status.into());
+}
+
+/// Junta uma lista de headers em texto multi-linha `nome: valor` p/ o detalhe do painel de rede.
+fn join_headers(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Drena o `net_rx` (`try_recv`) → upsert por `id` em `devtools.net`; marca `dirty` se algo mudou.
