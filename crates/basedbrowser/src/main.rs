@@ -29,9 +29,9 @@ mod persist;
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
-    CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext,
-    Opts, RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate,
-    WebViewId, WindowRenderingContext,
+    CookieSource, CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus,
+    OffscreenRenderingContext, Opts, RenderingContext, Servo, ServoBuilder, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{
@@ -1562,10 +1562,59 @@ fn install_evidence_drivers(
         install_tab_test(app, manager),
         install_bookmark_test(app),
         install_history_test(app),
+        install_persist_test(manager),
     ]
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// Driver de evidência da persistência (`BASEDBROWSER_PERSIST_TEST=1`, M6/ADR-0009): sem captura de
+/// janela (Wayland, L-008), prova em TEXTO que cookies + `localStorage` sobrevivem ao restart. A
+/// página de teste (`scripts/m6/pages/persist.html`) reflete o cookie + `localStorage` lidos no
+/// `document.title`; aqui lemos `webview.page_title()` (poll até a página carregar) e os cookies do
+/// jar via `cookies_for_url`. Rodado 2× no MESMO perfil por `scripts/m6/verify-persist.sh` (RUN1 seta,
+/// RUN2 lê de volta). No-op sem a env. Mantenha o `Timer`.
+fn install_persist_test(manager: &Rc<RefCell<Option<TabManager>>>) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_PERSIST_TEST")?;
+    let timer = Timer::default();
+    let mgr = manager.clone();
+    let done = Cell::new(false);
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(1000),
+        move || {
+            if done.get() {
+                return;
+            }
+            let guard = mgr.borrow();
+            let Some(m) = guard.as_ref() else {
+                return;
+            };
+            let Some(tab) = m.active_tab() else {
+                return;
+            };
+            let title = tab.webview.page_title().unwrap_or_default();
+            // Espera a página rodar o JS (que escreve o título "BBPERSIST cookie=… local=…").
+            if !title.starts_with("BBPERSIST cookie=") {
+                return;
+            }
+            done.set(true);
+            eprintln!("[persisttest] title={title}");
+            let url_str = tab.webview.url().map(|u| u.to_string()).unwrap_or_default();
+            if let Ok(url) = Url::parse(&url_str) {
+                let cookies = m
+                    .servo
+                    .site_data_manager()
+                    .cookies_for_url(url, CookieSource::NonHTTP);
+                for c in &cookies {
+                    eprintln!("[persisttest] cookie {}={}", c.name(), c.value());
+                }
+                eprintln!("[persisttest] {} cookie(s) lido(s) do jar", cookies.len());
+            }
+        },
+    );
+    Some(timer)
 }
 
 /// Driver de evidência do histórico (`BASEDBROWSER_HISTORY_TEST=1`): invoca os callbacks do painel +

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>BBPERSIST init</title>
+</head>
+<body>
+  <h1>BasedBrowser — teste de persistência (M6)</h1>
+  <!--
+    Página determinística para o harness de evidência do M6 (ADR-0009). Servida por
+    `python3 -m http.server` em localhost (origem http REAL — cookies/localStorage não persistem
+    confiável em file://). No load: LÊ o cookie `bb_test` e `localStorage.bb_local` que sobreviveram
+    de uma execução anterior e REFLETE ambos no `document.title` (o driver in-app
+    BASEDBROWSER_PERSIST_TEST lê via `webview.page_title()` — sem captura de janela, L-008). Em
+    seguida (RE)GRAVA os dois p/ a próxima execução. RUN1 (perfil novo) → `cookie=MISS local=MISS`;
+    RUN2 (mesmo perfil) → `cookie=42 local=persisted-99` (prova a persistência entre execuções).
+  -->
+  <p id="status">carregando…</p>
+  <script>
+    function getCookie(name) {
+      const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+    // 1) Lê o que sobreviveu da execução anterior (antes de regravar).
+    const cookieVal = getCookie('bb_test');
+    const localVal = localStorage.getItem('bb_local');
+    const line = 'BBPERSIST cookie=' + (cookieVal || 'MISS') + ' local=' + (localVal || 'MISS');
+    document.title = line;
+    document.getElementById('status').textContent = line;
+    // 2) (Re)grava p/ a PRÓXIMA execução. Cookie com max-age (persistente, não de sessão).
+    document.cookie = 'bb_test=42; max-age=86400; path=/';
+    localStorage.setItem('bb_local', 'persisted-99');
+  </script>
+</body>
+</html>
