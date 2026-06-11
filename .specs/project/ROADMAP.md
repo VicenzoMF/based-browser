@@ -1,7 +1,9 @@
 # Roadmap
 
-**Current Milestone:** M4 ✅ concluído — próximo: M5 (a definir; ver Future Considerations)
-**Status:** M0–M4 ✅ concluídos em 2026-06-10
+**Current Milestone:** M5 — Validar a tese: footprint/RAM vs. Chromium (PLANNED)
+**Status:** M0–M4 ✅ concluídos em 2026-06-10. Próximos: **M5** (validar a tese/footprint) → **M6**
+(devtools/inspeção). Recursos de usuário (downloads/cookies) e sustentabilidade (CI do Servo) ficam
+pós-M6 (ver Future Considerations).
 
 ---
 
@@ -144,10 +146,39 @@ atômicos (T1–T7 + T4b).
 
 ---
 
-## Future Considerations
+## M5 — Validar a tese: footprint/RAM vs. Chromium — PLANNED
 
-- Suporte a outras plataformas (Windows/DirectX, macOS/Metal, Android)
-- Medição/perfil sistemático de RAM vs. Chromium (validar a tese central)
-- Estratégia de atualização contínua do Servo (CI que testa a revisão fixada)
-- Devtools / inspeção
-- Política de download, gestão de cookies/armazenamento
+**Goal:** Provar (ou refutar) o **Goal #1 do PROJECT** ("footprint enxuto; medir RSS ocioso vs.
+Chromium e documentar a diferença"), que sustenta a razão de existir do projeto e nunca foi medido.
+Caráter: harness de medição + metodologia reproduzível + relatório versionado (não é uma "feature" de UI).
+
+### Features
+
+**Harness de medição de memória** - PLANNED
+
+- Medir **RSS/PSS** (Linux, `/proc/<pid>/smaps_rollup`) do BasedBrowser — somando a **árvore de
+  processos** (o Servo pode rodar multiprocess; confirmar `opts.multiprocess` na fonte) — em estados
+  controlados: **ocioso** (1 aba, página simples) e **custo por-aba** (N abas da mesma página).
+- Cruzar com o **relatório interno do Servo** (`Servo::create_memory_report` → `MemoryReportResult`).
+
+**Baseline vs. Chromium + relatório** - PLANNED
+
+- Mesma página/metodologia (warmup, idle settle) contra Chrome/Chromium; documentar a diferença num
+  relatório versionado (ADR ou doc de medição). pass^k onde a estabilidade importa (harness H4).
+
+---
+
+## M6 — Devtools / inspeção — PLANNED
+
+**Goal:** Inspeção de DOM/console via os devtools do Servo (`servo-devtools`/`-traits`), com UI mínima
+de inspeção no chrome. Pesquisar a superfície de devtools exposta pelo `servo 0.2.0` (maior incerteza
+de API). Depende do M5 (browser comprovadamente leve) estar fechado.
+
+---
+
+## Future Considerations (pós-M6)
+
+- **Recursos de usuário:** política de download, persistência de cookies/`localStorage` (há
+  `site_data_manager`/`storage` no `servo` 0.2.0 — confirmar na fonte).
+- **Sustentabilidade:** runbook + CI de atualização do pin do Servo (Goal #3; mitiga L-001). Harness H3.
+- Suporte a outras plataformas (Windows/DirectX, macOS/Metal, Android).

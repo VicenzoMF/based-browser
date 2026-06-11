@@ -30,12 +30,15 @@
 
 - Nada — checkpoint limpo na `main` (T1–T7 + T4b commitados e pushados; este commit = ADR-0007 + docs).
 
-## Pending (M5 — a definir)
+## Pending (próximos marcos definidos)
 
-1. Escolher o foco do M5 (ver ROADMAP "Future Considerations"): devtools/inspeção; gestão de cookies/
-   armazenamento/downloads; medição de RAM vs. Chromium; CI que testa o pin do Servo; outras plataformas.
-2. (barato, paralelo) **Sync GPU por fence/semáforo** no lugar do `glFinish` do M3.
-3. (futuro) **Intervalo de polling adaptativo** do event-loop (waker real já feito no T6/M3).
+1. **M5 — validar a tese: footprint/RAM vs. Chromium** (Goal #1 do PROJECT, nunca medido). Harness de
+   medição de RSS/PSS (ocioso + por-aba, somando a árvore de processos; `Servo::create_memory_report`)
+   + baseline vs Chromium + relatório versionado. Ver ROADMAP "M5".
+2. **M6 — devtools/inspeção** (decisão do usuário). Depende do M5 fechado.
+3. (barato, paralelo) **Sync GPU por fence/semáforo** no lugar do `glFinish` do M3.
+4. (futuro) **Intervalo de polling adaptativo** do event-loop; recursos de usuário (downloads/cookies);
+   CI de atualização do Servo.
 
 ## Blockers
 
