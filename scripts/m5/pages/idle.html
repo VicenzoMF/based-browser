@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!--
+  M5 — fixture "página simples" para medir o footprint OCIOSO (ver ADR-0008).
+  Determinística e auto-contida: SEM rede, SEM JavaScript, SEM recursos externos.
+  Mantém o estado estável após o load (nada anima) para o settle ser confiável.
+-->
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BasedBrowser M5 — página ociosa</title>
+    <style>
+      :root { color-scheme: light; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        font-family: system-ui, sans-serif;
+        background: #f4f5f7;
+        color: #1a1a1a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      main {
+        max-width: 32rem;
+        padding: 2rem;
+        background: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        text-align: center;
+      }
+      h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+      p  { font-size: 1rem; line-height: 1.5; margin: 0.25rem 0; color: #555; }
+      code { background: #eef; padding: 0 0.25rem; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>BasedBrowser — fixture ociosa</h1>
+      <p>Página estática mínima para medir o footprint de memória em repouso.</p>
+      <p>Sem rede, sem JavaScript, sem animação: o estado é estável após o load.</p>
+      <p><code>scripts/m5/pages/idle.html</code></p>
+    </main>
+  </body>
+</html>

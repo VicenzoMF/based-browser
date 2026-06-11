@@ -15,3 +15,6 @@ lefthook-local.yml
 # Índice local do MCP Pageboy (artefato de ferramenta, não faz parte do projeto)
 data/pageboy.db
 data/pageboy.db-*
+
+# M5: saída transitória do harness de medição (números canônicos vivem no ADR-0008 datado)
+scripts/m5/results/
