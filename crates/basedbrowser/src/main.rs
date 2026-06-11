@@ -30,8 +30,8 @@ use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
     CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext,
-    RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
-    WindowRenderingContext,
+    Opts, RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{
@@ -438,11 +438,22 @@ fn init_manager(
 
     // Waker real (T6): começa `true` p/ o 1º tick pós-init já spinar e carregar a página.
     let pending = Arc::new(AtomicBool::new(true));
-    let servo = ServoBuilder::default()
-        .event_loop_waker(Box::new(ServoWaker {
-            pending: pending.clone(),
-        }))
-        .build();
+    let mut builder = ServoBuilder::default().event_loop_waker(Box::new(ServoWaker {
+        pending: pending.clone(),
+    }));
+    // M6 (ADR-0009): LIGA a persistência de cookies + Web Storage. O Servo passa `opts.config_dir`
+    // p/ `new_resource_threads` (cookies) E `new_storage_threads` (local/sessionStorage); com
+    // `temporary_storage=false` (default, via `..Opts::default()`) os dados sobrevivem ao restart.
+    // Mexida MÍNIMA na API do Servo (embedding fino, L-001): 1 ponto, aditivo ao builder — NÃO
+    // reorganiza a ordem de init (o contexto GL segue lazy, L-004). Sem `config_dir` disponível,
+    // cai no default (sem persistência) em vez de falhar.
+    if let Some(dir) = persist::servo_config_dir() {
+        builder = builder.opts(Opts {
+            config_dir: Some(dir),
+            ..Opts::default()
+        });
+    }
+    let servo = builder.build();
     servo.setup_logging();
 
     let mut manager = TabManager {

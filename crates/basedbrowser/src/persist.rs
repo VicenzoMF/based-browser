@@ -83,6 +83,24 @@ pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|base| base.join(APP_DIR))
 }
 
+/// Diretório de dados persistentes do Servo (cookies + `localStorage`/`sessionStorage`), num subdir
+/// próprio (`~/.config/basedbrowser/servo/`) p/ NÃO colidir com nossos `*.json`. É o que ligamos como
+/// `Opts.config_dir` no `init_manager` (M6, ADR-0009) — honra `XDG_CONFIG_HOME` via `dirs`, preservando
+/// os perfis-limpos do ADR-0008. Cria o diretório (best-effort; o Servo cria os arquivos dentro).
+/// `None` se a plataforma não expõe diretório de config (aí o `init_manager` cai no default = sem
+/// persistência, em vez de falhar).
+#[must_use]
+pub fn servo_config_dir() -> Option<PathBuf> {
+    let dir = config_dir()?.join("servo");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "[m6] falha ao criar {} ({e}); persistência pode não funcionar",
+            dir.display()
+        );
+    }
+    Some(dir)
+}
+
 /// Carrega os favoritos (vazio se ausente/inválido).
 #[must_use]
 pub fn load_bookmarks() -> Vec<Bookmark> {
