@@ -29,10 +29,10 @@ mod persist;
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
-    AllowOrDenyRequest, CookieSource, CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker,
-    LoadStatus, OffscreenRenderingContext, Opts, Preferences, RenderingContext, Servo,
-    ServoBuilder, ServoDelegate, ServoError, StorageType, WebView, WebViewBuilder, WebViewDelegate,
-    WebViewId, WindowRenderingContext,
+    AllowOrDenyRequest, ConsoleLogLevel, CookieSource, CreateNewWebViewRequest, DeviceIntRect,
+    EventLoopWaker, LoadStatus, OffscreenRenderingContext, Opts, Preferences, RenderingContext,
+    Servo, ServoBuilder, ServoDelegate, ServoError, StorageType, WebView, WebViewBuilder,
+    WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{
@@ -174,10 +174,25 @@ struct Embedder {
 /// Tudo interior-mutável p/ o delegate escrever sem `borrow_mut` do `TabManager` (invariante ADR-0007).
 #[derive(Default)]
 struct DevtoolsState {
-    /// Porta do servidor de devtools do Servo, capturada via `notify_devtools_server_started` (porta
-    /// efêmera `:0` → o SO escolhe). `None` até o servidor subir. Usada pelo cliente RDP (T4)/UI (T5).
+    /// Porta do servidor de devtools do Servo, capturada via `notify_devtools_server_started`. `None`
+    /// até o servidor subir. Usada pelo cliente RDP (T4) e pela UI (T5). Ver [`devtools_port`].
     port: Cell<Option<u16>>,
+    /// Console IN-PROCESS (M7): linhas de `console.log/warn/error/...` capturadas por
+    /// `WebViewDelegate::show_console_message` — chega ao embedder INCONDICIONALMENTE (não depende do
+    /// servidor de devtools). Teto FIFO [`DEVTOOLS_CONSOLE_CAP`]. Lido pela UI (T5) / driver (T6).
+    console: RefCell<Vec<ConsoleLine>>,
+    /// Console/rede mudaram → o LOOP re-sincroniza os models da UI (T5). Análogo ao `chrome_dirty`.
+    dirty: Cell<bool>,
 }
+
+/// Uma linha do console in-app (M7): nível (`log`/`warn`/`error`/…) + texto já formatado pelo Servo.
+struct ConsoleLine {
+    level: &'static str,
+    text: String,
+}
+
+/// Teto FIFO do buffer de console (M7) — evita crescer sem limite numa página que loga muito.
+const DEVTOOLS_CONSOLE_CAP: usize = 500;
 
 /// M7 (ADR-0010): porta do servidor de devtools quando OPT-IN. `None` = desligado (sem a env
 /// `BASEDBROWSER_DEVTOOLS`) → sem socket, caminho normal e números do M5 intactos. Com a env setada:
@@ -306,6 +321,38 @@ impl WebViewDelegate for Embedder {
             .push(PendingTab { webview, context });
         eprintln!("[m4] window.open: nova aba enfileirada (integra no próximo tick)");
         self.chrome_dirty.set(true);
+    }
+
+    /// M7 (ADR-0010): `console.log/warn/error/...` de uma página → console in-app. Esta callback chega
+    /// ao embedder SEMPRE (não depende do servidor de devtools — `servo-script/dom/console.rs` emite
+    /// `ShowConsoleApiMessage` incondicionalmente). Acumulamos num buffer interior-mutável (teto FIFO)
+    /// e marcamos `devtools.dirty` p/ o LOOP refletir na UI — NUNCA escrevemos no Slint aqui (ADR-0007).
+    /// Buffer GLOBAL (não por-aba): um dev-tool simples mostra o console de toda a sessão.
+    fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
+        {
+            let mut buf = self.devtools.console.borrow_mut();
+            buf.push(ConsoleLine {
+                level: console_level_str(&level),
+                text: message,
+            });
+            let len = buf.len();
+            if len > DEVTOOLS_CONSOLE_CAP {
+                buf.drain(0..len - DEVTOOLS_CONSOLE_CAP);
+            }
+        }
+        self.devtools.dirty.set(true);
+    }
+}
+
+/// Nome curto e estável do nível de console (M7) p/ exibir/logar.
+fn console_level_str(level: &ConsoleLogLevel) -> &'static str {
+    match level {
+        ConsoleLogLevel::Log => "log",
+        ConsoleLogLevel::Debug => "debug",
+        ConsoleLogLevel::Info => "info",
+        ConsoleLogLevel::Warn => "warn",
+        ConsoleLogLevel::Error => "error",
+        ConsoleLogLevel::Trace => "trace",
     }
 }
 
@@ -1508,7 +1555,7 @@ fn main() -> Result<(), slint::PlatformError> {
     setup_history(&app, &manager, &app_data);
 
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
-    let _drivers = install_evidence_drivers(&app, &manager, &app_data);
+    let _drivers = install_evidence_drivers(&app, &manager, &app_data, &sink);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -1687,6 +1734,7 @@ fn install_evidence_drivers(
     app: &MainWindow,
     manager: &Rc<RefCell<Option<TabManager>>>,
     data: &Rc<RefCell<persist::AppData>>,
+    sink: &Rc<Embedder>,
 ) -> Vec<Timer> {
     [
         install_tab_test(app, manager),
@@ -1694,10 +1742,41 @@ fn install_evidence_drivers(
         install_history_test(app),
         install_persist_test(manager),
         install_clear_test(app, manager, data),
+        install_devtools_test(manager, sink),
     ]
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// Driver de evidência do M7 (`BASEDBROWSER_DEVTOOLS_TEST=1`, ADR-0010): sem captura de janela
+/// (Wayland, L-008), prova em TEXTO a inspeção in-app. Após o load da página de teste (que faz
+/// `console.log`), dumpa o buffer de console (T2); roda eval via `evaluate_javascript` (T3); e dumpa os
+/// registros de rede capturados pelo cliente RDP (T4). Etapas escalonadas em ticks de 1 s. No-op sem a
+/// env. Mantenha o `Timer`. A página/subrecurso vêm de `scripts/m7/` (T6).
+fn install_devtools_test(
+    _manager: &Rc<RefCell<Option<TabManager>>>,
+    sink: &Rc<Embedder>,
+) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_DEVTOOLS_TEST")?;
+    let timer = Timer::default();
+    let devtools = sink.devtools.clone();
+    let step = Cell::new(0u32);
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(1000),
+        move || {
+            if step.get() == 5 {
+                let buf = devtools.console.borrow();
+                eprintln!("[devtoolstest] console: {} linha(s)", buf.len());
+                for line in buf.iter() {
+                    eprintln!("[devtoolstest] console[{}] {}", line.level, line.text);
+                }
+            }
+            step.set(step.get() + 1);
+        },
+    );
+    Some(timer)
 }
 
 /// Driver de evidência do "limpar dados" (`BASEDBROWSER_CLEAR_TEST=1`, M6/ADR-0009): após a página de
