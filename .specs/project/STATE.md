@@ -1,11 +1,31 @@
 # State
 
-**Last Updated:** 2026-06-10
-**Current Work:** **Marco M4 CONCLUÍDO** ✅ — **recursos de navegador**: o browser virou usável no dia a dia. **Multi-aba** (`TabManager`/`Tab` em `src/main.rs`): UM `Servo`, N `WebView`s, cada aba com seu `OffscreenRenderingContext` (FBO próprio) derivado do `WindowRenderingContext` pai; **só a aba ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do M3 trocando só a origem do blit** (FBO da ativa); abas de fundo `set_throttled(true)`, não bombeadas. Barra de abas (`ui/app.slint`): abrir(+)/fechar(×)/trocar(clique); `window.open`/`target=_blank` via fila diferida (`pending_new`). O `Embedder` roteia callbacks por `webview.id()` → `TabState`, marca `chrome_dirty`, e o LOOP re-sincroniza a aba ativa → props do Slint (preserva o invariante anti-reentrância: delegate só faz borrow IMUTÁVEL; `manager` via `Weak`, sem ciclo Rc). **Persistência** (`src/persist.rs`, deps `serde`/`serde_json`/`dirs`): JSON em `~/.config/basedbrowser/` com escrita atômica (tmp+rename), tolerante a falha. **Favoritos** (★/barra, `bookmarks.json`), **histórico** (visitas por `notify_url_changed`, `history.json`, dedup+teto FIFO 1000; painel ☰ com busca + autocomplete na barra), **restauração de sessão** (`session.json`: URLs+ativa salvas no exit, restauradas no `init_manager`; precede o `BASEDBROWSER_URL`). **Chrome migrado** da macro inline grande p/ `ui/app.slint` via **re-export inline** (`slint::slint!(export {..} from "../ui/app.slint")`) — NÃO `build.rs`/`include_modules!()` (que injetaria o gerado como fonte do crate → 640 erros nos lints `deny`; a macro inline é isenta do clippy). Decisões em **ADR-0007** (estende 0003/0004/0005). **Evidência (smoke headless, captura de janela bloqueada no Wayland → drivers in-app + dumps):** abrir/trocar/fechar com conteúdo distinto por aba (aba1 VERDE/page2 no FBO próprio, ativa final ROXO/aba0); `window.open` → 2 abas; favoritos+histórico carregam entre execuções; sessão de 2 abas (ativa=1) restaurada. M0–M3 (zero-copy/input/resize) intactos; clippy `-D warnings`+fmt+6 testes verdes. **Próximo: M5** (a definir — ver ROADMAP "Future Considerations"). Pendências humanas (não bloqueiam): conectores globais claude.ai só na web; 2 deny rules do AgentShield no `settings.json`; README.md na raiz (opcional). Otimizações adiadas do M3: sync por fence/semáforo no lugar do `glFinish`; intervalo de polling adaptativo do event-loop.
+**Last Updated:** 2026-06-11
+**Current Work:** **Marco M5 CONCLUÍDO** ✅ — **validar a tese (footprint/RAM vs. Chromium)**, o Goal #1 do PROJECT, que nunca tinha sido medido. Harness de medição **reproduzível** em bash (`scripts/m5/`: `measure.sh` soma a ÁRVORE DE PROCESSOS via `/proc/<pid>/smaps_rollup` — PPID-walk, pois o children-file está ausente no kernel; `run.sh` roda a matriz; `pages/{idle,heavy}.html` determinísticas, sem rede). Metodologia JUSTA (confirmada na fonte: `Opts.multiprocess` default=`false` → **BasedBrowser é single-process**; **Chrome é multiprocess**): perfil limpo nos dois (`XDG_CONFIG_HOME`/`--user-data-dir`), headful, **release** (L-005), K=5 (pass^k, mediana robusta), **PSS** como métrica-título (RSS junto). Única mudança de produto = hook env `BASEDBROWSER_OPEN_TABS=N` (abre N abas p/ o custo por-aba; embedding fino, L-001). **VEREDITO: tese VALIDADA** — BasedBrowser é mais leve que o Chrome em TODOS os estados: ocioso **171,1 MiB PSS (1 proc) vs 314,7 MiB (13 proc) = 1,84×**; por-aba **5,5 vs 11,8 MiB = 2,16×**; pesada 205 vs 333 MiB. PORÉM o "ordens de magnitude" do PROJECT é **refutado/qualificado** — na métrica justa (PSS) é ~1,8×, não 10× (o RSS ×5,2 infla o Chrome por contar páginas compartilhadas ~13×). Decisão+números em **ADR-0008** (datado, imutável; design-for-rot). Relatório interno do Servo (`create_memory_report`) **adiado** (L-001: 4+ superfícies de API de crate interno; veredito não depende). Próximo: **M6** (devtools). Sobre o M4 (ADR-0007/AD-010/L-007) abaixo.
+
+**M4 (anterior):** **recursos de navegador** — o browser virou usável no dia a dia. **Multi-aba** (`TabManager`/`Tab` em `src/main.rs`): UM `Servo`, N `WebView`s, cada aba com seu `OffscreenRenderingContext` (FBO próprio) derivado do `WindowRenderingContext` pai; **só a aba ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do M3 trocando só a origem do blit** (FBO da ativa); abas de fundo `set_throttled(true)`, não bombeadas. Barra de abas (`ui/app.slint`): abrir(+)/fechar(×)/trocar(clique); `window.open`/`target=_blank` via fila diferida (`pending_new`). O `Embedder` roteia callbacks por `webview.id()` → `TabState`, marca `chrome_dirty`, e o LOOP re-sincroniza a aba ativa → props do Slint (preserva o invariante anti-reentrância: delegate só faz borrow IMUTÁVEL; `manager` via `Weak`, sem ciclo Rc). **Persistência** (`src/persist.rs`, deps `serde`/`serde_json`/`dirs`): JSON em `~/.config/basedbrowser/` com escrita atômica (tmp+rename), tolerante a falha. **Favoritos** (★/barra, `bookmarks.json`), **histórico** (visitas por `notify_url_changed`, `history.json`, dedup+teto FIFO 1000; painel ☰ com busca + autocomplete na barra), **restauração de sessão** (`session.json`: URLs+ativa salvas no exit, restauradas no `init_manager`; precede o `BASEDBROWSER_URL`). **Chrome migrado** da macro inline grande p/ `ui/app.slint` via **re-export inline** (`slint::slint!(export {..} from "../ui/app.slint")`) — NÃO `build.rs`/`include_modules!()` (que injetaria o gerado como fonte do crate → 640 erros nos lints `deny`; a macro inline é isenta do clippy). Decisões em **ADR-0007** (estende 0003/0004/0005). **Evidência (smoke headless, captura de janela bloqueada no Wayland → drivers in-app + dumps):** abrir/trocar/fechar com conteúdo distinto por aba (aba1 VERDE/page2 no FBO próprio, ativa final ROXO/aba0); `window.open` → 2 abas; favoritos+histórico carregam entre execuções; sessão de 2 abas (ativa=1) restaurada. M0–M3 (zero-copy/input/resize) intactos; clippy `-D warnings`+fmt+6 testes verdes. **Próximo: M5** (a definir — ver ROADMAP "Future Considerations"). Pendências humanas (não bloqueiam): conectores globais claude.ai só na web; 2 deny rules do AgentShield no `settings.json`; README.md na raiz (opcional). Otimizações adiadas do M3: sync por fence/semáforo no lugar do `glFinish`; intervalo de polling adaptativo do event-loop.
 
 ---
 
 ## Recent Decisions (Last 60 days)
+
+### AD-011: M5 — metodologia de medição de footprint + veredito da tese (2026-06-11)
+
+**Decision:** Medir a tese do PROJECT (footprint vs. Chromium) com um harness bash em `scripts/m5/`
+(NÃO um bin Rust — embedding fino, L-001), somando a **árvore de processos** inteira dos dois via
+`/proc/<pid>/smaps_rollup` (PPID-walk; children-file ausente). Metodologia justa: BasedBrowser é
+**single-process** (`multiprocess` default=`false`, confirmado na fonte) vs. Chrome **multiprocess**;
+perfil limpo nos dois, headful, **release**, K=5 (mediana), **PSS** = métrica-título. Única mudança de
+produto = hook `BASEDBROWSER_OPEN_TABS`. Números canônicos no **ADR-0008** (datado). Relatório interno
+do Servo (`create_memory_report`) **adiado** (L-001).
+**Reason:** O Goal #1 ("medir RSS ocioso vs. Chromium") nunca fora medido — era a maior dívida de
+evidência do projeto. PSS é justo para árvore multiprocess + libs compartilhadas; mediana é robusta a
+outliers de settle; release porque debug+métrica engana (L-005).
+**Trade-off:** Não cabear o relatório interno deixa o "onde mora a memória" como sinal indireto (custo
+marginal por-aba) em vez de breakdown JS-heap/layout. Aceito p/ não inflar o crate de churn.
+**Impact:** **Tese VALIDADA** com evidência reproduzível (BB 1,84× mais leve ocioso em PSS; 2,16× por
+aba), mas o "ordens de magnitude" do PROJECT foi **qualificado** (é ~1,8×, não 10×). Base honesta p/ o
+M6 e p/ decidir se "otimizar o baseline absoluto" vira marco futuro.
 
 ### AD-010: M4 — multi-aba (N WebViews/1 Servo) + persistência + chrome em arquivo `.slint` (2026-06-10)
 
@@ -138,6 +158,22 @@ _Nenhum no momento._
 **Solution:** Manter a entrada pela macro `slint::slint!`, mas **re-exportando o arquivo**: `slint::slint!(export { MainWindow, .. } from "../ui/app.slint");`. A expansão de macro de **crate externo é isenta do clippy** → o gate fica verde sem `#[allow]`, e a UI vive num `.slint` (LSP/preview). Path relativo ao `.rs` (toolchain ≥1.88; confirmado em `slint-macros/lib.rs`).
 **Prevents:** quebrar o gate de lint (ou poluir o código com `#[allow]` em saída de codegen) ao buscar "tooling" de UI. **Processo:** ADR-0007 registra a decisão; AD-008 ("sem build.rs") segue válida.
 
+### L-008: Medir footprint multiprocess de forma justa — PSS + árvore + mediana (2026-06-11)
+
+**Context:** No M5, ao comparar a memória do BasedBrowser (single-process) com a do Chrome (multiprocess).
+**Problem/aprendizado:** (1) **RSS engana numa árvore multiprocess** — soma páginas compartilhadas
+(binário, libs) uma vez por processo, inflando o Chrome (RSS ×5,2 vs PSS ×1,8 no ocioso). O **PSS**
+(smaps_rollup) divide a página compartilhada entre os mapeadores → é a métrica honesta. (2) Comparação
+só é justa **somando a árvore de processos inteira** dos dois (o Chrome subiu 13→18 processos; o
+BasedBrowser ficou em 1 — `multiprocess` default=`false`). (3) O **children-file do /proc está ausente**
+neste kernel (sem `CONFIG_PROC_CHILDREN`) → caminhar a árvore por **PPID** (`/proc/<pid>/stat`, campo
+após o último `)`, robusto a `comm` com espaços). (4) Settle não-determinístico gera **outliers** (1/5
+runs do N=6 amostrou antes das abas carregarem) → reportar **mediana**, não média. (5) `awk` em locale
+pt-BR imprime `,` decimal → **`LC_ALL=C`** ou o JSON sai inválido.
+**Prevents:** publicar um número de footprint enganoso (inflado por RSS ou por settle ruim) e "provar"
+a tese com metodologia frouxa. **Processo:** o veredito (validada, mas ~1,8× e não "ordens de magnitude")
+foi documentado honestamente no ADR-0008 — refutar a hipérbole é tão importante quanto validar o núcleo.
+
 ## Quick Tasks Completed
 
 | #   | Description | Date | Commit | Status |
@@ -147,7 +183,9 @@ _Nenhum no momento._
 
 ## Deferred Ideas
 
-- [ ] Medição sistemática de RAM vs. Chromium para validar a tese central — Captured during: project init
+- [x] **Medição sistemática de RAM vs. Chromium para validar a tese central** — feito (M5, ADR-0008): harness `scripts/m5/`, **tese VALIDADA** (BB 1,84× mais leve ocioso em PSS, 2,16× por aba), "ordens de magnitude" qualificado p/ ~1,8×
+- [ ] **Relatório interno do Servo** (`create_memory_report` → breakdown JS-heap/layout) cruzado com o RSS do SO — adiado no M5 (L-001: 4+ superfícies de API de crate interno; acessível via `servo::profile_traits`, `lib.rs:54`) — Captured during: M5
+- [ ] **Otimizar o baseline absoluto** (171 MiB ociosos não são "featherweight"; single-process carrega SpiderMonkey+layout+wgpu/Vulkan+Slint) — candidato a marco futuro; M5 só MEDIU — Captured during: M5
 - [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
 - [ ] Render-diff / "olhos" E2E — **destravado (M1 ✅)**; nota: captura de **janela** automatizada está bloqueada no GNOME 46/Wayland (gdbus negado; `import`/X11 não vê Wayland). Caminho viável p/ E2E: dump in-app do frame (`BASEDBROWSER_DUMP_FRAME=<path>`) e comparar PNGs — Captured during: harness H2
 - [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
@@ -176,6 +214,7 @@ _Nenhum no momento._
 - [x] **M2: browser navegável** — feito (ADR-0004, AD-008, L-005): input (pointer/scroll/teclado), chrome (URL/voltar/avançar/recarregar/loading/título), resize dinâmico. Evidência: YouTube via barra de URL + digitação em `<input>` + scroll/nav/resize, sem erros de GL. 6 commits atômicos (T1–T6)
 - [x] **M3: render GPU zero-copy** — feito (ADR-0005/0006, AD-009, L-006): texture sharing via memória externa Vulkan↔GL (`src/gpu_bridge.rs`), renderer `femtovg-wgpu`. Evidência: readback da textura compartilhada idêntico à fonte (byte a byte) + example.com via HTTPS. Benchmark: pump −40% (5,4→3,1 ms). Commits T0 (renderer), T1 (benchmark), T2–T4 (zero-copy)
 - [x] **M4: recursos de navegador** — feito (ADR-0007, AD-010, L-007): multi-aba (`TabManager`/`Tab`, reusa a ponte GPU do M3), `window.open`, favoritos/histórico/sessão persistidos em JSON (`src/persist.rs`, `serde`/`serde_json`/`dirs`), painel+autocomplete de histórico, restauração de sessão. Chrome → `ui/app.slint` (re-export inline, sem build.rs). Evidência: drivers in-app (`BASEDBROWSER_TAB_TEST`/`BOOKMARK_TEST`/`HISTORY_TEST`) + dumps por aba. 8 commits (T1–T7 + T4b)
+- [x] **M5: validar a tese (footprint vs. Chromium)** — feito (ADR-0008, AD-011, L-008): harness bash `scripts/m5/` (`measure.sh`+`run.sh`+`pages/`), PPID-walk de `/proc/smaps_rollup`, PSS-título, soma da árvore, perfil limpo, release, K=5. Hook `BASEDBROWSER_OPEN_TABS`. **Tese VALIDADA** (ocioso BB 171,1 MiB PSS / 1 proc vs Chrome 314,7 / 13 proc = 1,84×; por-aba 5,5 vs 11,8 MiB = 2,16×; pesada 205 vs 333 MiB). "Ordens de magnitude" qualificado p/ ~1,8× (PSS). Commits atômicos T1–T7
 
 ---
 

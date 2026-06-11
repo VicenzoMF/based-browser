@@ -24,11 +24,18 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
-Marco **M4 ✅** — recursos de navegador: **multi-aba** (`src/main.rs` `TabManager`/`Tab`: N `WebView`s/
-1 `Servo`, cada aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → **reusa a ponte
-GPU zero-copy do M3** trocando a origem do blit; abas de fundo throttled). **Histórico** + **favoritos**
-+ **restauração de sessão** persistidos em JSON (`src/persist.rs`: `serde`/`serde_json`/`dirs`,
-`~/.config/basedbrowser/`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs` — o gate de lint
-proíbe o `include_modules!()`; ver L-007). `window.open` via fila diferida. Decisões em **ADR-0007,
-AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo: **M5** (a
-definir). Harness **H1** ok.
+Marco **M5 ✅** — **tese validada (footprint vs. Chromium)**, o Goal #1 do PROJECT. Harness de medição
+reproduzível em bash (**`scripts/m5/`**: `measure.sh` soma a ÁRVORE DE PROCESSOS via
+`/proc/<pid>/smaps_rollup` com PPID-walk; `run.sh` roda a matriz; `pages/{idle,heavy}.html`). Metodologia
+JUSTA: BasedBrowser é **single-process** (`Opts.multiprocess` default=`false`), Chrome é multiprocess →
+soma da árvore + **PSS** (métrica-título; RSS infla o Chrome), perfil limpo, headful, **release**, K=5
+(mediana). Hook de produto `BASEDBROWSER_OPEN_TABS` (custo por-aba; embedding fino). **VEREDITO:** BB
+mais leve em tudo — ocioso **171,1 MiB PSS (1 proc) vs Chrome 314,7 (13 proc) = 1,84×**; por-aba 5,5 vs
+11,8 MiB; o "ordens de magnitude" do PROJECT é ~1,8× (não 10×). Números em **ADR-0008** · **AD-011** ·
+**L-008**. Relatório interno do Servo adiado (L-001).
+Marco **M4 ✅** — recursos: **multi-aba** (`src/main.rs` `TabManager`/`Tab`: N `WebView`s/1 `Servo`, cada
+aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do
+M3; abas de fundo throttled). **Histórico**+**favoritos**+**restauração de sessão** em JSON
+(`src/persist.rs`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs`; L-007). Decisões em
+**ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo:
+**M6** (devtools/inspeção). Harness **H1** ok.

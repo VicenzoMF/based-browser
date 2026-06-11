@@ -1,9 +1,9 @@
 # Roadmap
 
-**Current Milestone:** M5 — Validar a tese: footprint/RAM vs. Chromium (PLANNED)
-**Status:** M0–M4 ✅ concluídos em 2026-06-10. Próximos: **M5** (validar a tese/footprint) → **M6**
-(devtools/inspeção). Recursos de usuário (downloads/cookies) e sustentabilidade (CI do Servo) ficam
-pós-M6 (ver Future Considerations).
+**Current Milestone:** M6 — Devtools / inspeção (PLANNED)
+**Status:** M0–M5 ✅ concluídos (M0–M4 em 2026-06-10; **M5 em 2026-06-11** — tese VALIDADA, ADR-0008).
+Próximo: **M6** (devtools/inspeção). Recursos de usuário (downloads/cookies) e sustentabilidade (CI do
+Servo) ficam pós-M6 (ver Future Considerations).
 
 ---
 
@@ -146,25 +146,32 @@ atômicos (T1–T7 + T4b).
 
 ---
 
-## M5 — Validar a tese: footprint/RAM vs. Chromium — PLANNED
+## M5 — Validar a tese: footprint/RAM vs. Chromium ✅ CONCLUÍDO (2026-06-11)
 
 **Goal:** Provar (ou refutar) o **Goal #1 do PROJECT** ("footprint enxuto; medir RSS ocioso vs.
 Chromium e documentar a diferença"), que sustenta a razão de existir do projeto e nunca foi medido.
-Caráter: harness de medição + metodologia reproduzível + relatório versionado (não é uma "feature" de UI).
+**Atingido** — harness de medição reproduzível (`scripts/m5/`) + metodologia justa + **ADR-0008**
+(datado, com números + veredito). **TESE VALIDADA**: o BasedBrowser é mais leve que o Chrome em todos
+os estados; o "ordens de magnitude" do PROJECT foi **qualificado** (é ~1,8× em PSS, não 10×).
 
 ### Features
 
-**Harness de medição de memória** - PLANNED
+**Harness de medição de memória** - DONE
 
-- Medir **RSS/PSS** (Linux, `/proc/<pid>/smaps_rollup`) do BasedBrowser — somando a **árvore de
-  processos** (o Servo pode rodar multiprocess; confirmar `opts.multiprocess` na fonte) — em estados
-  controlados: **ocioso** (1 aba, página simples) e **custo por-aba** (N abas da mesma página).
-- Cruzar com o **relatório interno do Servo** (`Servo::create_memory_report` → `MemoryReportResult`).
+- `scripts/m5/measure.sh`: mede **RSS/PSS** somando a **árvore de processos** (PPID-walk de
+  `/proc/<pid>/smaps_rollup` — children-file ausente no kernel). BasedBrowser é **single-process**
+  (`Opts.multiprocess` default=`false`, confirmado na fonte); Chrome é multiprocess (13→18 procs).
+  Perfil limpo, headful, **release** (L-005), K=5 (pass^k, mediana). **PSS** = métrica-título.
+- `run.sh` roda a matriz; `pages/{idle,heavy}.html` (determinísticas, sem rede). Hook de produto
+  `BASEDBROWSER_OPEN_TABS=N` (custo por-aba; embedding fino, L-001).
+- Relatório interno do Servo (`create_memory_report`) **adiado** (L-001; veredito não depende).
 
-**Baseline vs. Chromium + relatório** - PLANNED
+**Baseline vs. Chromium + relatório** - DONE
 
-- Mesma página/metodologia (warmup, idle settle) contra Chrome/Chromium; documentar a diferença num
-  relatório versionado (ADR ou doc de medição). pass^k onde a estabilidade importa (harness H4).
+- Baseline = `google-chrome-stable` (.deb), MESMA metodologia. **Números (release, K=5):**
+  ocioso **BB 171,1 MiB PSS (1 proc) vs Chrome 314,7 MiB (13 proc) = 1,84×** (RSS ×5,2, mas RSS
+  infla o Chrome); por-aba **5,5 vs 11,8 MiB = 2,16×**; pesada 205 vs 333 MiB. Veredito + metodologia
+  em **ADR-0008** (números canônicos lá; saída do harness é gitignorada).
 
 ---
 
