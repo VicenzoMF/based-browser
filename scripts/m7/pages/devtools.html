@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <!-- O eval do driver (document.title) confere este valor. -->
+  <title>BBDEVTOOLS</title>
+</head>
+<body>
+  <h1>BasedBrowser — M7 devtools harness</h1>
+  <p>Página de evidência: emite console.log e busca um subrecurso em intervalo (gera rede REAL).</p>
+  <script>
+    // Console (capturado in-process por show_console_message — T2).
+    console.log("hello-42");
+    console.warn("aviso-x");
+    // Rede: busca um subrecurso a cada 2 s — gera requisições GET com RESPOSTA (status 200 +
+    // headers + payload), capturadas pelo cliente RDP (T4). O cache-buster garante eventos novos
+    // (o cliente assina eventos FUTUROS, não há snapshot p/ network-event).
+    setInterval(function () {
+      fetch("/data.json?t=" + Date.now())
+        .then(function (r) { return r.json(); })
+        .then(function (d) { console.log("fetched", d.value); })
+        .catch(function (e) { console.error("fetch falhou", e); });
+    }, 2000);
+  </script>
+</body>
+</html>
