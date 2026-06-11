@@ -1,15 +1,23 @@
-// Chrome do BasedBrowser. Migrado da macro inline `slint::slint!{}` (que vivia em `main.rs`) para um
-// arquivo `.slint` compilado por `build.rs` (`slint-build`) — ver ADR-0007 (M4). Motivo: o chrome
-// cresce no M4 (barra de abas + favoritos + painel de histórico); separar a UI do Rust dá tooling
-// (LSP/preview) e mantém o `main.rs` focado na lógica. AD-008 ("sem build.rs") fica registrado como
-// superado pelo ADR-0007 — a decisão de decodificar eventos a primitivos no `.slint` (M2) é mantida.
+// Chrome do BasedBrowser. Entra no Rust via re-export inline da macro
+// `slint::slint!(export { MainWindow, .. } from "../ui/app.slint")` — SEM build.rs (L-007:
+// `include_modules!()` injeta o gerado como fonte do crate → 640 erros nos lints `deny`; a macro
+// de crate externo é isenta do clippy). Decodifica eventos a primitivos; a tradução para
+// `InputEvent` do Servo mora no Rust (`input.rs`).
+//
+// M9 (ADR-0012): redesign "dark refinado". Tokens centralizados em `global Theme` (espelham
+// `.specs/features/m9-redesign-ui/spec.md` e o mock em `designs/based-browser.pen`). Botões em
+// ÍCONE (`IconBtn`), omnibox arredondada com cadeado, abas-pílula, e o menu overflow `⋯` que
+// recolhe Histórico/Limpar/DevTools/Zoom/Find. A função (props/callbacks) é a do M2–M7; o M9 só
+// muda o VISUAL e ADICIONA affordances (sem regredir).
 import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 
 // Uma aba na barra de abas (M4). O Rust constrói um `VecModel<TabInfo>` a partir do `TabManager`
-// (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual.
+// (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual. `icon` (M9):
+// favicon da página (vazio até o Servo entregar via `notify_favicon_changed`).
 export struct TabInfo {
     title: string,
     active: bool,
+    icon: image,
 }
 
 // Um favorito na barra de favoritos (M4). O Rust constrói um `VecModel<BookmarkInfo>` a partir do
@@ -43,12 +51,120 @@ export struct DevNetRow {
     body: string,
 }
 
-// Chrome do M2/M4: barra de abas + barra de navegação + área web. O `.slint` apenas DECODIFICA cada
-// evento para primitivos e chama um callback; a tradução primitivo -> `InputEvent` do Servo mora no
-// Rust (`input.rs`). Coordenadas: declarar os params como `physical-length` faz o Slint
-// converter logical -> físico pelo scale factor da janela, e como a Image usa `image-fit: fill`
-// sobre um contexto do Servo do MESMO tamanho da área web, o mapeamento é identidade
-// (physical-px == device-px do Servo). Sem matemática de letterbox.
+// M9: tokens do tema "dark refinado" (fonte da verdade compartilhada com o mock do Pencil).
+global Theme {
+    out property <color> bg-base: #0f0f14;
+    out property <color> bg-surface: #15151b;
+    out property <color> bg-surface-2: #1e1e26;
+    out property <color> bg-elevated: #2a2a3a;
+    out property <color> accent: #6c5ce7;
+    out property <color> accent-soft: #6c5ce733;
+    out property <color> text-hi: #f0f0f5;
+    out property <color> text-mid: #9a9aa6;
+    out property <color> text-lo: #6a6a7a;
+    out property <color> border: #2a2a38;
+    out property <color> danger: #ff6b6b;
+    out property <color> ok: #5dd1a0;
+    out property <length> radius-pill: 8px;
+    out property <length> radius-btn: 6px;
+    out property <length> radius-panel: 12px;
+}
+
+// M9: botão em ícone (glifo de texto), com estados enabled/hover/disabled. Reusado em toda a barra
+// (nav ‹ › ⟳, ★, ⋯, +, × das pílulas, controles de zoom/find).
+component IconBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    in property <length> glyph-size: 18px;
+    in property <color> glyph-color: Theme.text-hi;
+    in property <color> hover-bg: Theme.bg-elevated;
+    callback clicked();
+    width: 34px;
+    height: 34px;
+    border-radius: Theme.radius-btn;
+    background: root.enabled && touch.has-hover ? root.hover-bg : transparent;
+    animate background { duration: 90ms; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        width: 100%;
+        height: 100%;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.glyph;
+        font-size: root.glyph-size;
+        color: root.enabled ? root.glyph-color : Theme.text-lo;
+    }
+}
+
+// M9: cadeado da omnibox desenhado (monocromático, respeita o tema) — fechado/ok p/ https,
+// neutro p/ http. Arco (anel) + corpo sólido sobreposto formam o glifo.
+component LockIcon inherits Rectangle {
+    in property <bool> secure;
+    width: 14px;
+    height: 14px;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 0;
+        width: 8px;
+        height: 9px;
+        border-radius: 4px;
+        border-width: 1.5px;
+        border-color: root.secure ? Theme.ok : Theme.text-mid;
+        background: transparent;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 5px;
+        width: 11px;
+        height: 9px;
+        border-radius: 2px;
+        background: root.secure ? Theme.ok : Theme.text-mid;
+    }
+}
+
+// M9: item do menu overflow `⋯` — rótulo + dica de atalho à direita; hover em accent-soft.
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    callback clicked();
+    height: 34px;
+    border-radius: Theme.radius-btn;
+    background: touch.has-hover ? Theme.accent-soft : transparent;
+    animate background { duration: 90ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+        Text {
+            text: root.label;
+            font-size: 13px;
+            color: Theme.text-hi;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.hint;
+            font-size: 12px;
+            color: Theme.text-lo;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Chrome do M2/M4/M7 repaginado no M9: barra de abas + toolbar (omnibox) + favoritos + área web.
+// O `.slint` apenas DECODIFICA cada evento para primitivos e chama um callback; a tradução
+// primitivo -> `InputEvent` do Servo mora no Rust (`input.rs`). Coordenadas: declarar os params como
+// `physical-length` faz o Slint converter logical -> físico pelo scale factor, e como a Image usa
+// `image-fit: fill` sobre um contexto do Servo do MESMO tamanho da área web, o mapeamento é
+// identidade (physical-px == device-px do Servo). Sem matemática de letterbox.
 export component MainWindow inherits Window {
     // Dirigidas pelo Rust (pipeline de frame + WebViewDelegate).
     in property <image> frame;
@@ -57,6 +173,10 @@ export component MainWindow inherits Window {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
     in property <string> window-title: "BasedBrowser";
+    // M9: URL atual é https (cadeado fechado) — derivado no Rust (sync_chrome).
+    in property <bool> page-secure: false;
+    // M9: zoom da aba ativa (1.0 = 100%) — mostrado no menu ⋯.
+    in property <float> page-zoom: 1.0;
     // M4: lista de abas (derivada do TabManager no Rust).
     in property <[TabInfo]> tabs;
     // M4: lista de favoritos (derivada do AppData no Rust).
@@ -64,8 +184,10 @@ export component MainWindow inherits Window {
     // M4: histórico filtrado p/ o painel + sugestões de autocomplete da barra (ambos do Rust).
     in property <[HistoryItem]> history;
     in property <[HistoryItem]> suggestions;
-    // Visibilidade do painel de histórico (alternada pelo botão ☰; o Rust também pode fechá-lo).
+    // Visibilidade do painel de histórico (alternada pelo menu ⋯; o Rust também pode fechá-lo).
     in-out property <bool> history-open: false;
+    // M9: menu overflow ⋯ (recolhe Histórico/Limpar/DevTools/Zoom/Find).
+    in-out property <bool> menu-open: false;
     // M7 (ADR-0010): painel de devtools (console/eval + rede). Models e status vêm do Rust.
     in property <[DevConsoleLine]> dev-console;
     in property <[DevNetRow]> dev-net;
@@ -113,183 +235,229 @@ export component MainWindow inherits Window {
     title: root.window-title;
     preferred-width: 1024px;
     preferred-height: 768px;
+    background: Theme.bg-base;
 
     VerticalLayout {
         padding: 0;
         spacing: 0;
 
-        // Barra de abas (M4): uma "pílula" por aba (clicar seleciona; × fecha) + botão "+" p/ nova
-        // aba. A `TouchArea` de fundo captura o clique de seleção; o × é um elemento custom (não o
-        // Button do std-widgets, cuja altura mínima estourava a pílula) — uma coluna de largura fixa
-        // que preenche a altura da linha, com o glifo centrado e realce no hover; intercepta o clique.
-        // O Text do título não captura pointer, então o clique nele "atravessa" até a TouchArea.
-        HorizontalLayout {
-            vertical-stretch: 0;
-            padding: 4px;
-            padding-bottom: 0;
-            spacing: 4px;
-            for tab[idx] in root.tabs : Rectangle {
-                width: 168px;
-                height: 30px;
-                background: tab.active ? #2a2a3a : #15151b;
-                border-radius: 6px;
-                border-width: 1px;
-                border-color: tab.active ? #4a4a66 : #00000000;
-                select := TouchArea {
-                    clicked => { root.select-tab(idx); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 4px;
-                    spacing: 4px;
-                    Text {
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                        color: tab.active ? #ffffff : #9a9aa6;
-                        overflow: elide;
-                        text: tab.title == "" ? "Nova aba" : tab.title;
+        // Barra de abas (M4/M9): pílulas com favicon + título (elide) + × no hover; aba ativa
+        // elevada (bg-elevated) com contorno de accent. Botão + discreto à direita.
+        Rectangle {
+            background: Theme.bg-surface;
+            height: 42px;
+            HorizontalLayout {
+                padding: 8px;
+                padding-bottom: 0;
+                spacing: 6px;
+                for tab[idx] in root.tabs : Rectangle {
+                    width: 188px;
+                    height: 34px;
+                    border-radius: Theme.radius-pill;
+                    background: tab.active ? Theme.bg-elevated : transparent;
+                    border-width: 1px;
+                    border-color: tab.active ? Theme.accent : transparent;
+                    select := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.select-tab(idx); }
                     }
-                    Rectangle {
-                        width: 22px;
-                        border-radius: 4px;
-                        background: tabclose.has-hover ? #4a4a5e : transparent;
-                        tabclose := TouchArea {
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 4px;
+                        spacing: 8px;
+                        // Favicon (M9): dot placeholder neutro + Image por cima (imagem vazia não
+                        // renderiza → o dot aparece; quando o Servo entrega o favicon, ele cobre o dot).
+                        Rectangle {
+                            width: 15px;
+                            height: 15px;
+                            border-radius: 4px;
+                            background: tab.active ? Theme.accent : Theme.text-lo;
+                            Image {
+                                width: 100%;
+                                height: 100%;
+                                image-fit: contain;
+                                source: tab.icon;
+                            }
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            color: tab.active ? Theme.text-hi : Theme.text-mid;
+                            overflow: elide;
+                            font-size: 13px;
+                            text: tab.title == "" ? "Nova aba" : tab.title;
+                        }
+                        IconBtn {
+                            width: 22px;
+                            height: 22px;
+                            glyph: "×";
+                            glyph-size: 16px;
+                            glyph-color: Theme.text-mid;
+                            hover-bg: #4a4a5e;
                             clicked => { root.close-tab(idx); }
                         }
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: "×";
-                            font-size: 17px;
-                            color: tabclose.has-hover ? #ffffff : #b8b8c6;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                    }
+                }
+                IconBtn {
+                    width: 30px;
+                    height: 30px;
+                    glyph: "+";
+                    glyph-size: 18px;
+                    glyph-color: Theme.text-mid;
+                    clicked => { root.new-tab(); }
+                }
+                // Empurra as abas para a esquerda (não esticam para preencher a barra).
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // Toolbar (M9): nav em ícone ‹ › ⟳ + omnibox arredondada (cadeado + URL + ★) + menu ⋯.
+        Rectangle {
+            background: Theme.bg-surface;
+            height: 52px;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 6px;
+                IconBtn {
+                    glyph: "‹";
+                    glyph-size: 24px;
+                    enabled: root.can-go-back;
+                    clicked => { root.go-back(); }
+                }
+                IconBtn {
+                    glyph: "›";
+                    glyph-size: 24px;
+                    enabled: root.can-go-forward;
+                    clicked => { root.go-forward(); }
+                }
+                IconBtn {
+                    glyph: "⟳";
+                    glyph-size: 19px;
+                    clicked => { root.reload(); }
+                }
+                // Omnibox: campo arredondado com cadeado, TextInput (sem chrome do std) e ★.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.bg-surface-2;
+                    border-radius: Theme.radius-pill;
+                    border-width: 1px;
+                    border-color: omni-input.has-focus ? Theme.accent : Theme.border;
+                    animate border-color { duration: 120ms; }
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 4px;
+                        spacing: 8px;
+                        LockIcon {
+                            secure: root.page-secure;
+                        }
+                        // Wrapper p/ sobrepor o placeholder quando vazio (TextInput não tem placeholder).
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            omni-input := TextInput {
+                                width: 100%;
+                                height: 100%;
+                                vertical-alignment: center;
+                                color: Theme.text-hi;
+                                font-size: 13px;
+                                single-line: true;
+                                // edited → autocomplete; accepted (Enter) → carrega e limpa as sugestões.
+                                text: root.page-url;
+                                accepted => { root.load-url(self.text); root.url-edited(""); }
+                                edited => { root.url-edited(self.text); }
+                            }
+                            if omni-input.text == "" : Text {
+                                x: 0;
+                                height: 100%;
+                                vertical-alignment: center;
+                                color: Theme.text-lo;
+                                font-size: 13px;
+                                text: "Pesquisar ou digitar uma URL";
+                            }
+                        }
+                        IconBtn {
+                            width: 28px;
+                            height: 28px;
+                            glyph: "★";
+                            glyph-size: 15px;
+                            glyph-color: Theme.accent;
+                            hover-bg: Theme.bg-elevated;
+                            clicked => { root.add-bookmark(); }
                         }
                     }
                 }
-            }
-            Button {
-                width: 32px;
-                text: "+";
-                clicked => { root.new-tab(); }
-            }
-            // Empurra as abas para a esquerda (não esticam para preencher a barra).
-            Rectangle { horizontal-stretch: 1; }
-        }
-
-        // Barra de navegação (altura natural; não estica).
-        HorizontalLayout {
-            vertical-stretch: 0;
-            padding: 6px;
-            spacing: 6px;
-            Button {
-                text: "<";
-                enabled: root.can-go-back;
-                clicked => { root.go-back(); }
-            }
-            Button {
-                text: ">";
-                enabled: root.can-go-forward;
-                clicked => { root.go-forward(); }
-            }
-            Button {
-                text: "Recarregar";
-                clicked => { root.reload(); }
-            }
-            LineEdit {
-                placeholder-text: "Digite uma URL e tecle Enter";
-                text: root.page-url;
-                // edited → autocomplete; accepted (Enter) → carrega e limpa as sugestões.
-                edited(t) => { root.url-edited(t); }
-                accepted(t) => { root.load-url(t); root.url-edited(""); }
-            }
-            // ★ adiciona a página atual aos favoritos (M4).
-            Button {
-                text: "★";
-                clicked => { root.add-bookmark(); }
-            }
-            // ☰ abre/fecha o painel de histórico (M4).
-            Button {
-                text: "☰";
-                clicked => {
-                    root.history-open = !root.history-open;
-                    root.toggle-history();
+                IconBtn {
+                    glyph: "⋯";
+                    glyph-size: 22px;
+                    clicked => { root.menu-open = !root.menu-open; }
                 }
-            }
-            // M6: limpa dados de navegação (cookies + Web Storage + histórico; favoritos preservados).
-            Button {
-                text: "Limpar dados";
-                clicked => { root.clear-browsing-data(); }
-            }
-            // M7: abre/fecha o painel de devtools (console/eval + rede).
-            Button {
-                text: "DevTools";
-                clicked => {
-                    root.devtools-open = !root.devtools-open;
-                    root.toggle-devtools();
-                }
-            }
-            if root.loading : Text {
-                vertical-alignment: center;
-                color: #aaaaaa;
-                text: "carregando...";
             }
         }
 
-        // Barra de favoritos (M4): aparece só se há favoritos. Cada "pílula" abre na aba ativa; o ×
-        // remove (mesmo elemento × custom da barra de abas — TouchArea de fundo + Text + coluna ×).
-        if root.bookmarks.length > 0 : HorizontalLayout {
-            vertical-stretch: 0;
-            padding: 4px;
-            padding-top: 0;
-            spacing: 6px;
-            for bm[idx] in root.bookmarks : Rectangle {
-                height: 26px;
-                min-width: 64px;
-                max-width: 220px;
-                background: #15151b;
-                border-radius: 5px;
-                TouchArea {
-                    clicked => { root.open-bookmark(idx); }
-                }
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 3px;
-                    spacing: 2px;
-                    Text {
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                        color: #c8c8d4;
-                        overflow: elide;
-                        text: bm.title == "" ? bm.url : bm.title;
+        // Indicador de loading (M9): barra fina de accent sob a toolbar (substitui o texto "carregando").
+        Rectangle {
+            height: 2px;
+            background: root.loading ? Theme.accent : transparent;
+            animate background { duration: 120ms; }
+        }
+
+        // Barra de favoritos (M4/M9): aparece só se há favoritos. Cada pílula abre na aba ativa; o ×
+        // remove. Mesmo sistema visual das abas.
+        if root.bookmarks.length > 0 : Rectangle {
+            background: Theme.bg-surface;
+            height: 34px;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-bottom: 4px;
+                spacing: 4px;
+                for bm[idx] in root.bookmarks : Rectangle {
+                    height: 26px;
+                    min-width: 60px;
+                    max-width: 200px;
+                    border-radius: Theme.radius-btn;
+                    background: bmtouch.has-hover ? Theme.bg-elevated : transparent;
+                    bmtouch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-bookmark(idx); }
                     }
-                    Rectangle {
-                        width: 20px;
-                        border-radius: 4px;
-                        background: bmclose.has-hover ? #4a4a5e : transparent;
-                        bmclose := TouchArea {
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 3px;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 12px;
+                            height: 12px;
+                            border-radius: 3px;
+                            background: Theme.text-mid;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            color: Theme.text-mid;
+                            font-size: 12px;
+                            text: bm.title == "" ? bm.url : bm.title;
+                        }
+                        IconBtn {
+                            width: 18px;
+                            height: 18px;
+                            glyph: "×";
+                            glyph-size: 13px;
+                            glyph-color: Theme.text-lo;
+                            hover-bg: #4a4a5e;
                             clicked => { root.remove-bookmark(idx); }
                         }
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: "×";
-                            font-size: 15px;
-                            color: bmclose.has-hover ? #ffffff : #b8b8c6;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
                     }
                 }
+                Rectangle { horizontal-stretch: 1; }
             }
-            Rectangle { horizontal-stretch: 1; }
         }
 
         // Area web: a Image exibe o frame do Servo; a TouchArea captura pointer/scroll e o
         // FocusScope captura teclado. `web-resized` dispara quando o layout muda o tamanho.
         web := Rectangle {
             vertical-stretch: 1;
-            background: #1e1e26;
+            background: Theme.bg-surface-2;
             changed width => { root.web-resized(self.width, self.height); }
             changed height => { root.web-resized(self.width, self.height); }
 
@@ -568,6 +736,57 @@ export component MainWindow inherits Window {
                                     color: #c0c4d8;
                                     wrap: word-wrap;
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Menu overflow ⋯ (M9): overlay sobre a área web, ancorado no topo-direito (sob o botão ⋯).
+            // Recolhe o que poluía a toolbar. Clicar fora fecha. Zoom/Find entram em T6/T7.
+            if root.menu-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea {
+                    clicked => { root.menu-open = false; }
+                }
+                Rectangle {
+                    x: parent.width - self.width - 8px;
+                    y: 8px;
+                    width: 244px;
+                    background: Theme.bg-elevated;
+                    border-radius: Theme.radius-panel;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-color: #00000070;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-offset-y: 10px;
+                    // Absorve cliques na área do card (fora dos itens) p/ não fechar o menu.
+                    TouchArea { }
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+                        MenuItem {
+                            label: "Histórico";
+                            clicked => {
+                                root.menu-open = false;
+                                root.history-open = true;
+                                root.toggle-history();
+                            }
+                        }
+                        MenuItem {
+                            label: "Limpar dados";
+                            clicked => {
+                                root.menu-open = false;
+                                root.clear-browsing-data();
+                            }
+                        }
+                        MenuItem {
+                            label: "DevTools";
+                            clicked => {
+                                root.menu-open = false;
+                                root.devtools-open = true;
+                                root.toggle-devtools();
                             }
                         }
                     }

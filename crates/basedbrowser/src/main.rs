@@ -1082,7 +1082,12 @@ fn sync_chrome(app: &MainWindow, manager: &TabManager) {
         return;
     };
     let state = &tab.state;
-    app.set_page_url(state.url.borrow().as_str().into());
+    {
+        let url = state.url.borrow();
+        app.set_page_url(url.as_str().into());
+        // M9: cadeado fechado/ok p/ https (derivado aqui; o Slint não faz parsing de URL).
+        app.set_page_secure(url.starts_with("https://"));
+    }
     app.set_loading(state.loading.get());
     app.set_can_go_back(state.can_go_back.get());
     app.set_can_go_forward(state.can_go_forward.get());
@@ -1123,6 +1128,8 @@ fn rebuild_tabs_model(model: &VecModel<TabInfo>, manager: &TabManager) {
         .map(|(i, tab)| TabInfo {
             title: tab_label(&tab.state.title.borrow(), &tab.state.url.borrow()).into(),
             active: i == manager.active,
+            // M9: favicon — vazio por ora; preenchido em T8 (notify_favicon_changed).
+            icon: slint::Image::default(),
         })
         .collect();
     model.set_vec(rows);
