@@ -5,8 +5,15 @@
 // superado pelo ADR-0007 — a decisão de decodificar eventos a primitivos no `.slint` (M2) é mantida.
 import { Button, LineEdit } from "std-widgets.slint";
 
-// Chrome do M2: barra de navegação + área web. O `.slint` apenas DECODIFICA cada evento
-// para primitivos e chama um callback; a tradução primitivo -> `InputEvent` do Servo mora no
+// Uma aba na barra de abas (M4). O Rust constrói um `VecModel<TabInfo>` a partir do `TabManager`
+// (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual.
+export struct TabInfo {
+    title: string,
+    active: bool,
+}
+
+// Chrome do M2/M4: barra de abas + barra de navegação + área web. O `.slint` apenas DECODIFICA cada
+// evento para primitivos e chama um callback; a tradução primitivo -> `InputEvent` do Servo mora no
 // Rust (`input.rs`). Coordenadas: declarar os params como `physical-length` faz o Slint
 // converter logical -> físico pelo scale factor da janela, e como a Image usa `image-fit: fill`
 // sobre um contexto do Servo do MESMO tamanho da área web, o mapeamento é identidade
@@ -19,12 +26,18 @@ export component MainWindow inherits Window {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
     in property <string> window-title: "BasedBrowser";
+    // M4: lista de abas (derivada do TabManager no Rust).
+    in property <[TabInfo]> tabs;
 
     // Chrome -> Rust.
     callback load-url(string);
     callback go-back();
     callback go-forward();
     callback reload();
+    // M4: ciclo de vida das abas (índice 0-based na lista `tabs`).
+    callback new-tab();
+    callback select-tab(int);
+    callback close-tab(int);
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -40,6 +53,51 @@ export component MainWindow inherits Window {
     VerticalLayout {
         padding: 0;
         spacing: 0;
+
+        // Barra de abas (M4): uma "pílula" por aba (clicar seleciona; × fecha) + botão "+" p/ nova
+        // aba. A `TouchArea` de fundo captura o clique de seleção; o × (Button) intercepta o seu;
+        // o Text não captura pointer, então o clique no título "atravessa" até a TouchArea.
+        HorizontalLayout {
+            vertical-stretch: 0;
+            padding: 4px;
+            padding-bottom: 0;
+            spacing: 4px;
+            for tab[idx] in root.tabs : Rectangle {
+                width: 168px;
+                height: 30px;
+                background: tab.active ? #2a2a3a : #15151b;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: tab.active ? #4a4a66 : #00000000;
+                select := TouchArea {
+                    clicked => { root.select-tab(idx); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 4px;
+                    Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        color: tab.active ? #ffffff : #9a9aa6;
+                        overflow: elide;
+                        text: tab.title == "" ? "Nova aba" : tab.title;
+                    }
+                    Button {
+                        width: 22px;
+                        text: "×";
+                        clicked => { root.close-tab(idx); }
+                    }
+                }
+            }
+            Button {
+                width: 32px;
+                text: "+";
+                clicked => { root.new-tab(); }
+            }
+            // Empurra as abas para a esquerda (não esticam para preencher a barra).
+            Rectangle { horizontal-stretch: 1; }
+        }
 
         // Barra de navegação (altura natural; não estica).
         HorizontalLayout {

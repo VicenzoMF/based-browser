@@ -33,7 +33,7 @@ use servo::{
     ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
-use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
+use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 use url::Url;
 
 // M4 (ADR-0007): o chrome saiu da macro inline grande para `ui/app.slint` (LSP/preview, e p/ crescer
@@ -42,7 +42,7 @@ use url::Url;
 // NÃO usamos `build.rs`/`include_modules!()` de propósito: aquele caminho injeta o `app.rs` gerado
 // como FONTE do crate, e o código gerado usa `.unwrap()`/`.expect()` à vontade → trombaria com os
 // lints `deny` do projeto; a expansão da macro inline (crate externo) é isenta do clippy. Ver ADR-0007.
-slint::slint!(export { MainWindow } from "../ui/app.slint";);
+slint::slint!(export { MainWindow, TabInfo } from "../ui/app.slint";);
 
 /// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
 /// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
@@ -337,6 +337,23 @@ impl TabManager {
                 tab.webview.set_throttled(true);
             }
         }
+    }
+
+    /// Fecha a aba `index` (dropar o `Tab` → `Drop` envia `CloseWebView`). RECUSA fechar a última aba
+    /// (mantém o browser sempre usável e a sessão não-vazia). Recalcula o índice ativo e reativa a
+    /// aba resultante. Devolve `true` se fechou.
+    fn close_tab(&mut self, index: usize) -> bool {
+        if self.tabs.len() <= 1 || index >= self.tabs.len() {
+            return false;
+        }
+        self.tabs.remove(index); // drop → CloseWebView + remove_webview no painter
+        let new_active = if self.active > index {
+            self.active - 1
+        } else {
+            self.active.min(self.tabs.len() - 1)
+        };
+        self.set_active(new_active);
+        true
     }
 }
 
@@ -731,6 +748,90 @@ fn wake(manager: &TabManager) {
     manager.pending.store(true, Ordering::Release);
 }
 
+/// Rótulo de uma aba na barra: o título da página, ou (enquanto não chega) o host da URL; vazio se
+/// nem isso (ex.: `file://`) — aí o `.slint` exibe "Nova aba".
+fn tab_label(title: &str, url: &str) -> String {
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Reconstrói o `VecModel<TabInfo>` (a barra de abas do Slint) a partir do `TabManager` (fonte da
+/// verdade). Chamado após mudanças estruturais (abrir/fechar/trocar) e quando títulos mudam.
+fn rebuild_tabs_model(model: &VecModel<TabInfo>, manager: &TabManager) {
+    let rows: Vec<TabInfo> = manager
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| TabInfo {
+            title: tab_label(&tab.state.title.borrow(), &tab.state.url.borrow()).into(),
+            active: i == manager.active,
+        })
+        .collect();
+    model.set_vec(rows);
+}
+
+/// Registra os callbacks de ciclo de vida das abas (novo/selecionar/fechar). Mutam o `TabManager`
+/// (`borrow_mut` — rodam FORA do `spin_event_loop`, sem reentrância), reconstroem a barra de abas e
+/// marcam `chrome_dirty` p/ o loop re-sincronizar a aba ativa no chrome.
+fn wire_tabs(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    tabs_model: &Rc<VecModel<TabInfo>>,
+    sink: &Rc<Embedder>,
+    web_size: &Rc<Cell<dpi::PhysicalSize<u32>>>,
+    chrome_dirty: &Rc<Cell<bool>>,
+) {
+    let (mgr, model, embedder, ws, cd) = (
+        manager.clone(),
+        tabs_model.clone(),
+        sink.clone(),
+        web_size.clone(),
+        chrome_dirty.clone(),
+    );
+    app.on_new_tab(move || {
+        if let Some(tm) = mgr.borrow_mut().as_mut() {
+            let scale = tm
+                .active_tab()
+                .map_or(1.0, |tab| tab.webview.hidpi_scale_factor().get());
+            match home_page_url() {
+                Ok(url) => {
+                    tm.open_tab(ws.get(), scale, url, &embedder, true);
+                }
+                Err(e) => eprintln!("[m4] nova aba: URL inicial inválida: {e}"),
+            }
+            rebuild_tabs_model(&model, tm);
+            cd.set(true);
+            wake(tm);
+        }
+    });
+
+    let (mgr, model, cd) = (manager.clone(), tabs_model.clone(), chrome_dirty.clone());
+    app.on_select_tab(move |index| {
+        if let Some(tm) = mgr.borrow_mut().as_mut() {
+            tm.set_active(usize::try_from(index).unwrap_or(0));
+            rebuild_tabs_model(&model, tm);
+            cd.set(true);
+            wake(tm);
+        }
+    });
+
+    let (mgr, model, cd) = (manager.clone(), tabs_model.clone(), chrome_dirty.clone());
+    app.on_close_tab(move |index| {
+        if let Some(tm) = mgr.borrow_mut().as_mut() {
+            if tm.close_tab(usize::try_from(index).unwrap_or(0)) {
+                rebuild_tabs_model(&model, tm);
+                cd.set(true);
+                wake(tm);
+            }
+        }
+    });
+}
+
 /// Telemetria do hot path de frame, habilitada por `BASEDBROWSER_BENCH=1` (no-op quando ausente).
 /// Mede o tempo de cada `pump_frame` — exatamente o custo que o M3 ataca — e reporta a cada ~1 s:
 /// taxa de frames bombeados, média/p95/máx do tempo de pump em ms. A métrica é a MESMA na cópia-CPU
@@ -911,6 +1012,15 @@ fn main() -> Result<(), slint::PlatformError> {
 
     wire_chrome(&app, &manager, &web_size);
 
+    // M4: barra de abas. `tabs_model` é a view derivada do `TabManager` (fonte da verdade); os
+    // callbacks de ciclo de vida a reconstroem, e o loop a atualiza quando títulos mudam.
+    let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
+    app.set_tabs(tabs_model.clone().into());
+    wire_tabs(&app, &manager, &tabs_model, &sink, &web_size, &chrome_dirty);
+
+    // Driver de evidência das abas (no-op sem `BASEDBROWSER_TAB_TEST`); manter o timer vivo.
+    let _tab_test = install_tab_test(&app, &manager);
+
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
     // Slint, evitando a colisão de `make_current` que corrompia o GL (ver doc do módulo).
@@ -922,6 +1032,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_web_size = web_size;
     let tick_wgpu = wgpu_ctx;
     let tick_chrome_dirty = chrome_dirty;
+    let tick_tabs_model = tabs_model;
     let init_ticks = Cell::new(0u32);
     let idle_ticks = Cell::new(0u32);
     let tick_bench = RefCell::new(FrameBench::new());
@@ -968,11 +1079,13 @@ fn main() -> Result<(), slint::PlatformError> {
             pump_frame(manager, &tick_weak, &tick_logged);
             tick_bench.borrow_mut().record(started.elapsed());
         }
-        // M4: re-sincroniza o chrome (props da aba ativa) se o `Embedder` marcou algo mudado.
+        // M4: re-sincroniza o chrome (props da aba ativa) + a barra de abas (títulos) se o `Embedder`
+        // marcou algo mudado.
         if tick_chrome_dirty.replace(false) {
             if let Some(app) = tick_weak.upgrade() {
                 sync_chrome(&app, manager);
             }
+            rebuild_tabs_model(&tick_tabs_model, manager);
         }
         idle_ticks.set(if woken || produced {
             0
@@ -991,6 +1104,83 @@ fn main() -> Result<(), slint::PlatformError> {
     // na T7. O histórico já é gravado a cada visita.
     save_session_on_exit(&exit_manager);
     result
+}
+
+/// URL `file://` da 2ª página de teste (escrita por [`home_page_url`] no init). Usada pelo driver de
+/// evidência das abas.
+fn page2_url() -> Option<Url> {
+    Url::from_file_path(std::env::temp_dir().join("basedbrowser-page2.html")).ok()
+}
+
+/// Salva o frame da FONTE (FBO próprio) da aba `index` em `path` — evidência de que CADA aba renderiza
+/// seu próprio conteúdo (FBOs independentes). Pinta e torna o contexto corrente antes de ler.
+fn dump_tab_source(manager: &Rc<RefCell<Option<TabManager>>>, index: usize, path: &str) {
+    if let Some(m) = manager.borrow().as_ref() {
+        if let Some(tab) = m.tabs.get(index) {
+            tab.webview.paint();
+            if tab.context.make_current().is_ok() {
+                dump_source(tab, path, true);
+            }
+        }
+    }
+}
+
+/// Loga contagem de abas + índice ativo (resumo do driver de evidência).
+fn log_tab_summary(manager: &Rc<RefCell<Option<TabManager>>>) {
+    if let Some(m) = manager.borrow().as_ref() {
+        eprintln!(
+            "[tabtest] resumo: {} aba(s), ativa={}",
+            m.tabs.len(),
+            m.active
+        );
+    }
+}
+
+/// Driver de evidência das abas (`BASEDBROWSER_TAB_TEST=1`): como não há clique na UI num smoke test
+/// headless (captura de janela bloqueada no Wayland), dispara os MESMOS callbacks da barra de abas via
+/// `invoke_*` numa sequência temporizada (1 passo/s) e salva o source FBO da 2ª aba. Combinado com
+/// `BASEDBROWSER_DUMP_FRAME` (textura da aba ATIVA) + `BASEDBROWSER_EXIT_AFTER_MS`, prova abrir/trocar/
+/// fechar com conteúdo distinto por aba. Devolve o `Timer` (mantê-lo vivo). No-op sem a env.
+fn install_tab_test(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_TAB_TEST")?;
+    let timer = Timer::default();
+    let weak = app.as_weak();
+    let mgr = manager.clone();
+    let step = Cell::new(0u32);
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(1000),
+        move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let n = step.replace(step.get() + 1);
+            match n {
+                2 => {
+                    app.invoke_new_tab();
+                    eprintln!("[tabtest] passo: abrir 2ª aba");
+                }
+                3 => {
+                    if let Some(url) = page2_url() {
+                        app.invoke_load_url(url.to_string().into());
+                    }
+                    eprintln!("[tabtest] passo: carregar page2 na aba ativa (2ª)");
+                }
+                5 => dump_tab_source(&mgr, 1, "/tmp/m4-t4-tab1-source.png"),
+                6 => {
+                    app.invoke_select_tab(0);
+                    eprintln!("[tabtest] passo: trocar p/ aba 0");
+                }
+                8 => {
+                    app.invoke_close_tab(1);
+                    eprintln!("[tabtest] passo: fechar aba 1");
+                }
+                9 => log_tab_summary(&mgr),
+                _ => {}
+            }
+        },
+    );
+    Some(timer)
 }
 
 /// Instala um timer single-shot que encerra o loop do Slint após `BASEDBROWSER_EXIT_AFTER_MS` ms, se
