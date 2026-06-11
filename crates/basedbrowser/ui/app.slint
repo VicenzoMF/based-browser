@@ -3,7 +3,7 @@
 // cresce no M4 (barra de abas + favoritos + painel de histórico); separar a UI do Rust dá tooling
 // (LSP/preview) e mantém o `main.rs` focado na lógica. AD-008 ("sem build.rs") fica registrado como
 // superado pelo ADR-0007 — a decisão de decodificar eventos a primitivos no `.slint` (M2) é mantida.
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, LineEdit, ListView } from "std-widgets.slint";
 
 // Uma aba na barra de abas (M4). O Rust constrói um `VecModel<TabInfo>` a partir do `TabManager`
 // (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual.
@@ -15,6 +15,13 @@ export struct TabInfo {
 // Um favorito na barra de favoritos (M4). O Rust constrói um `VecModel<BookmarkInfo>` a partir do
 // `AppData` (persistido em ~/.config/basedbrowser/bookmarks.json) e o entrega à propriedade `bookmarks`.
 export struct BookmarkInfo {
+    title: string,
+    url: string,
+}
+
+// Uma entrada de histórico (M4) — usada tanto no painel de histórico quanto no autocomplete da barra.
+// O Rust filtra/ordena (mais recente primeiro) e entrega via `history` (painel) e `suggestions` (barra).
+export struct HistoryItem {
     title: string,
     url: string,
 }
@@ -37,6 +44,11 @@ export component MainWindow inherits Window {
     in property <[TabInfo]> tabs;
     // M4: lista de favoritos (derivada do AppData no Rust).
     in property <[BookmarkInfo]> bookmarks;
+    // M4: histórico filtrado p/ o painel + sugestões de autocomplete da barra (ambos do Rust).
+    in property <[HistoryItem]> history;
+    in property <[HistoryItem]> suggestions;
+    // Visibilidade do painel de histórico (alternada pelo botão ☰; o Rust também pode fechá-lo).
+    in-out property <bool> history-open: false;
 
     // Chrome -> Rust.
     callback load-url(string);
@@ -51,6 +63,13 @@ export component MainWindow inherits Window {
     callback add-bookmark();
     callback open-bookmark(int);
     callback remove-bookmark(int);
+    // M4: histórico. toggle-history abre/atualiza o painel; search-history filtra; open-history abre
+    // a entrada `history[i]`. url-edited alimenta o autocomplete; open-suggestion abre `suggestions[i]`.
+    callback toggle-history();
+    callback search-history(string);
+    callback open-history(int);
+    callback url-edited(string);
+    callback open-suggestion(int);
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -134,12 +153,22 @@ export component MainWindow inherits Window {
             LineEdit {
                 placeholder-text: "Digite uma URL e tecle Enter";
                 text: root.page-url;
-                accepted(t) => { root.load-url(t); }
+                // edited → autocomplete; accepted (Enter) → carrega e limpa as sugestões.
+                edited(t) => { root.url-edited(t); }
+                accepted(t) => { root.load-url(t); root.url-edited(""); }
             }
             // ★ adiciona a página atual aos favoritos (M4).
             Button {
                 text: "★";
                 clicked => { root.add-bookmark(); }
+            }
+            // ☰ abre/fecha o painel de histórico (M4).
+            Button {
+                text: "☰";
+                clicked => {
+                    root.history-open = !root.history-open;
+                    root.toggle-history();
+                }
             }
             if root.loading : Text {
                 vertical-alignment: center;
@@ -229,6 +258,91 @@ export component MainWindow inherits Window {
                     scroll-event(e) => {
                         root.forward-scroll(self.mouse-x, self.mouse-y, e.delta-x, e.delta-y);
                         accept
+                    }
+                }
+            }
+
+            // Autocomplete (M4): sugestões de histórico ancoradas no topo da área web, enquanto se
+            // digita na barra de URL. Some quando não há sugestões (Rust limpa no Enter / texto vazio).
+            if root.suggestions.length > 0 : Rectangle {
+                y: 0;
+                x: 0;
+                width: 100%;
+                height: min(root.suggestions.length * 32px, 6 * 32px);
+                background: #14141c;
+                border-color: #33334a;
+                border-width: 1px;
+                VerticalLayout {
+                    for s[idx] in root.suggestions : Rectangle {
+                        height: 32px;
+                        background: stouch.has-hover ? #24243a : transparent;
+                        stouch := TouchArea {
+                            clicked => { root.open-suggestion(idx); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            Text {
+                                vertical-alignment: center;
+                                color: #cfd2e6;
+                                overflow: elide;
+                                text: s.url;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Painel de histórico (M4): overlay sobre a área web com busca + lista (revisitar).
+            if root.history-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: #0d0d12;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Histórico";
+                            color: #ffffff;
+                            font-size: 20px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button {
+                            text: "Fechar";
+                            clicked => { root.history-open = false; }
+                        }
+                    }
+                    LineEdit {
+                        placeholder-text: "Buscar no histórico...";
+                        edited(t) => { root.search-history(t); }
+                    }
+                    ListView {
+                        for h[idx] in root.history : Rectangle {
+                            height: 34px;
+                            background: htouch.has-hover ? #1c1c28 : transparent;
+                            htouch := TouchArea {
+                                clicked => { root.open-history(idx); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 10px;
+                                Text {
+                                    width: 45%;
+                                    vertical-alignment: center;
+                                    color: #e6e6f0;
+                                    overflow: elide;
+                                    text: h.title == "" ? h.url : h.title;
+                                }
+                                Text {
+                                    vertical-alignment: center;
+                                    color: #8a8a9a;
+                                    overflow: elide;
+                                    text: h.url;
+                                }
+                            }
+                        }
                     }
                 }
             }

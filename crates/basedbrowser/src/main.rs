@@ -34,7 +34,9 @@ use servo::{
     WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
-use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
+use slint::{
+    ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel,
+};
 use url::Url;
 
 // M4 (ADR-0007): o chrome saiu da macro inline grande para `ui/app.slint` (LSP/preview, e p/ crescer
@@ -43,7 +45,7 @@ use url::Url;
 // NÃO usamos `build.rs`/`include_modules!()` de propósito: aquele caminho injeta o `app.rs` gerado
 // como FONTE do crate, e o código gerado usa `.unwrap()`/`.expect()` à vontade → trombaria com os
 // lints `deny` do projeto; a expansão da macro inline (crate externo) é isenta do clippy. Ver ADR-0007.
-slint::slint!(export { MainWindow, TabInfo, BookmarkInfo } from "../ui/app.slint";);
+slint::slint!(export { MainWindow, TabInfo, BookmarkInfo, HistoryItem } from "../ui/app.slint";);
 
 /// Página inicial/de-teste do M2 (HTML/CSS auto-contido). Carregada via `file://` para um render
 /// determinístico e offline (sem rede/TLS). É **rolável** (testa scroll), tem um `<input>` (testa
@@ -883,6 +885,97 @@ fn wire_tabs(
     });
 }
 
+/// Filtra o histórico por `query` (substring case-insensitive em url/título), mais recente primeiro,
+/// dedup por url, até `limit` itens. Query vazia = histórico recente sem filtro.
+fn filtered_history(data: &persist::AppData, query: &str, limit: usize) -> Vec<HistoryItem> {
+    let q = query.to_lowercase();
+    let mut seen = std::collections::HashSet::new();
+    data.history
+        .iter()
+        .rev()
+        .filter(|entry| {
+            q.is_empty()
+                || entry.url.to_lowercase().contains(&q)
+                || entry.title.to_lowercase().contains(&q)
+        })
+        .filter(|entry| seen.insert(entry.url.clone()))
+        .take(limit)
+        .map(|entry| HistoryItem {
+            title: entry.title.as_str().into(),
+            url: entry.url.as_str().into(),
+        })
+        .collect()
+}
+
+/// Configura o painel de histórico + o autocomplete da barra e registra seus callbacks. Os dois
+/// `VecModel` (painel e sugestões) são preenchidos sob demanda (abrir painel / digitar / buscar).
+fn setup_history(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+) {
+    let history_model: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
+    let suggestions_model: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
+    app.set_history(history_model.clone().into());
+    app.set_suggestions(suggestions_model.clone().into());
+
+    // Abrir/atualizar o painel = histórico recente completo (até 200).
+    let (dat, mdl) = (data.clone(), history_model.clone());
+    app.on_toggle_history(move || {
+        mdl.set_vec(filtered_history(&dat.borrow(), "", 200));
+    });
+
+    // Buscar no painel.
+    let (dat, mdl) = (data.clone(), history_model.clone());
+    app.on_search_history(move |query| {
+        mdl.set_vec(filtered_history(&dat.borrow(), query.as_str(), 200));
+    });
+
+    // Autocomplete: até 6 sugestões; texto vazio limpa.
+    let (dat, mdl) = (data.clone(), suggestions_model.clone());
+    app.on_url_edited(move |text| {
+        let rows = if text.is_empty() {
+            Vec::new()
+        } else {
+            filtered_history(&dat.borrow(), text.as_str(), 6)
+        };
+        mdl.set_vec(rows);
+    });
+
+    // Abrir uma entrada do painel = carregar a URL na aba ativa + fechar o painel.
+    let (mgr, weak) = (manager.clone(), app.as_weak());
+    app.on_open_history(move |index| {
+        if let Some(app) = weak.upgrade() {
+            if let Some(item) = row_url(&app.get_history(), index) {
+                if let Some(parsed) = parse_user_url(&item) {
+                    with_active_webview(&mgr, |wv| wv.load(parsed.clone()));
+                }
+            }
+            app.set_history_open(false);
+        }
+    });
+
+    // Abrir uma sugestão = carregar a URL na aba ativa + limpar as sugestões.
+    let (mgr, sug) = (manager.clone(), suggestions_model);
+    let weak = app.as_weak();
+    app.on_open_suggestion(move |index| {
+        if let Some(app) = weak.upgrade() {
+            if let Some(item) = row_url(&app.get_suggestions(), index) {
+                if let Some(parsed) = parse_user_url(&item) {
+                    with_active_webview(&mgr, |wv| wv.load(parsed.clone()));
+                }
+            }
+        }
+        sug.set_vec(Vec::new());
+    });
+}
+
+/// Lê a URL da linha `index` de um model de `HistoryItem` (painel ou sugestões).
+fn row_url(model: &slint::ModelRc<HistoryItem>, index: i32) -> Option<String> {
+    let idx = usize::try_from(index).ok()?;
+    model.row_data(idx).map(|item| item.url.to_string())
+}
+
 /// Cria a barra de favoritos: model populado dos favoritos carregados + callbacks.
 fn setup_bookmarks(
     app: &MainWindow,
@@ -1204,9 +1297,11 @@ fn main() -> Result<(), slint::PlatformError> {
     // M4: barra de favoritos (persistida), populada dos favoritos carregados no start.
     setup_bookmarks(&app, &manager, &app_data);
 
+    // M4: painel de histórico (lista + busca) + autocomplete da barra de URL.
+    setup_history(&app, &manager, &app_data);
+
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
-    let _tab_test = install_tab_test(&app, &manager);
-    let _bm_test = install_bookmark_test(&app);
+    let _drivers = install_evidence_drivers(&app, &manager);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -1372,6 +1467,71 @@ fn install_tab_test(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>)
                     eprintln!("[tabtest] passo: fechar aba 1");
                 }
                 9 => log_tab_summary(&mgr),
+                _ => {}
+            }
+        },
+    );
+    Some(timer)
+}
+
+/// Instala todos os drivers de evidência (no-op sem as envs respectivas). Retorna os timers — o
+/// chamador deve mantê-los vivos.
+fn install_evidence_drivers(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+) -> Vec<Timer> {
+    [
+        install_tab_test(app, manager),
+        install_bookmark_test(app),
+        install_history_test(app),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Driver de evidência do histórico (`BASEDBROWSER_HISTORY_TEST=1`): invoca os callbacks do painel +
+/// autocomplete e loga as contagens dos models resultantes (provando popular/filtrar/sugerir/revisitar
+/// num smoke test não-interativo). Requer histórico pré-existente (de execuções anteriores). Mantenha
+/// o `Timer`.
+fn install_history_test(app: &MainWindow) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_HISTORY_TEST")?;
+    let timer = Timer::default();
+    let weak = app.as_weak();
+    let step = Cell::new(0u32);
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(1000),
+        move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            match step.replace(step.get() + 1) {
+                2 => {
+                    app.invoke_toggle_history();
+                    eprintln!(
+                        "[histtest] painel aberto: {} entrada(s)",
+                        app.get_history().row_count()
+                    );
+                }
+                3 => {
+                    app.invoke_search_history("basedbrowser".into());
+                    eprintln!(
+                        "[histtest] busca 'basedbrowser': {} resultado(s)",
+                        app.get_history().row_count()
+                    );
+                }
+                4 => {
+                    app.invoke_url_edited("file".into());
+                    eprintln!(
+                        "[histtest] autocomplete 'file': {} sugestão(ões)",
+                        app.get_suggestions().row_count()
+                    );
+                }
+                5 => {
+                    app.invoke_open_history(0);
+                    eprintln!("[histtest] revisitou history[0] (carrega na aba ativa)");
+                }
                 _ => {}
             }
         },
