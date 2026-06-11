@@ -9,7 +9,7 @@
 // ÍCONE (`IconBtn`), omnibox arredondada com cadeado, abas-pílula, e o menu overflow `⋯` que
 // recolhe Histórico/Limpar/DevTools/Zoom/Find. A função (props/callbacks) é a do M2–M7; o M9 só
 // muda o VISUAL e ADICIONA affordances (sem regredir).
-import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 
 // Uma aba na barra de abas (M4). O Rust constrói um `VecModel<TabInfo>` a partir do `TabManager`
 // (fonte da verdade) e o entrega à propriedade `tabs`. `active` destaca a aba atual. `icon` (M9):
@@ -156,6 +156,69 @@ component MenuItem inherits Rectangle {
             color: Theme.text-lo;
             vertical-alignment: center;
         }
+    }
+}
+
+// M9: botão de texto temático (painéis de histórico/devtools). `active` realça (aba selecionada).
+component TextBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+    height: 30px;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius-btn;
+    background: root.active ? Theme.accent-soft : (touch.has-hover ? Theme.bg-elevated : Theme.bg-surface-2);
+    animate background { duration: 90ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.accent : Theme.text-hi;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+// M9: campo de texto temático (busca de histórico, REPL do devtools) — TextInput sem o chrome do
+// std-widget + placeholder + borda que acende no foco. `text` é alias bidirecional p/ o consumidor
+// poder limpar (ex.: após avaliar no devtools).
+component SearchField inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+    callback accepted(string);
+    height: 34px;
+    background: Theme.bg-surface-2;
+    border-radius: Theme.radius-btn;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    animate border-color { duration: 120ms; }
+    input := TextInput {
+        x: 12px;
+        width: parent.width - 24px;
+        height: 100%;
+        vertical-alignment: center;
+        color: Theme.text-hi;
+        font-size: 13px;
+        single-line: true;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
+    }
+    if input.text == "" : Text {
+        x: 12px;
+        height: 100%;
+        vertical-alignment: center;
+        color: Theme.text-lo;
+        font-size: 13px;
+        text: root.placeholder;
     }
 }
 
@@ -540,21 +603,22 @@ export component MainWindow inherits Window {
                 x: 0;
                 width: 100%;
                 height: min(root.suggestions.length * 32px, 6 * 32px);
-                background: #14141c;
-                border-color: #33334a;
+                background: Theme.bg-elevated;
+                border-color: Theme.border;
                 border-width: 1px;
                 VerticalLayout {
                     for s[idx] in root.suggestions : Rectangle {
                         height: 32px;
-                        background: stouch.has-hover ? #24243a : transparent;
+                        background: stouch.has-hover ? Theme.accent-soft : transparent;
                         stouch := TouchArea {
+                            mouse-cursor: pointer;
                             clicked => { root.open-suggestion(idx); }
                         }
                         HorizontalLayout {
                             padding-left: 12px;
                             Text {
                                 vertical-alignment: center;
-                                color: #cfd2e6;
+                                color: Theme.text-hi;
                                 overflow: elide;
                                 text: s.url;
                             }
@@ -567,33 +631,36 @@ export component MainWindow inherits Window {
             if root.history-open : Rectangle {
                 width: 100%;
                 height: 100%;
-                background: #0d0d12;
+                background: Theme.bg-base;
                 VerticalLayout {
-                    padding: 14px;
-                    spacing: 10px;
+                    padding: 16px;
+                    spacing: 12px;
                     HorizontalLayout {
                         spacing: 8px;
                         Text {
                             text: "Histórico";
-                            color: #ffffff;
-                            font-size: 20px;
+                            color: Theme.text-hi;
+                            font-size: 18px;
+                            font-weight: 600;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                         }
-                        Button {
-                            text: "Fechar";
+                        TextBtn {
+                            label: "Fechar";
                             clicked => { root.history-open = false; }
                         }
                     }
-                    LineEdit {
-                        placeholder-text: "Buscar no histórico...";
+                    SearchField {
+                        placeholder: "Buscar no histórico…";
                         edited(t) => { root.search-history(t); }
                     }
                     ListView {
                         for h[idx] in root.history : Rectangle {
                             height: 34px;
-                            background: htouch.has-hover ? #1c1c28 : transparent;
+                            border-radius: Theme.radius-btn;
+                            background: htouch.has-hover ? Theme.bg-elevated : transparent;
                             htouch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.open-history(idx); }
                             }
                             HorizontalLayout {
@@ -602,13 +669,13 @@ export component MainWindow inherits Window {
                                 Text {
                                     width: 45%;
                                     vertical-alignment: center;
-                                    color: #e6e6f0;
+                                    color: Theme.text-hi;
                                     overflow: elide;
                                     text: h.title == "" ? h.url : h.title;
                                 }
                                 Text {
                                     vertical-alignment: center;
-                                    color: #8a8a9a;
+                                    color: Theme.text-mid;
                                     overflow: elide;
                                     text: h.url;
                                 }
@@ -624,38 +691,41 @@ export component MainWindow inherits Window {
             if root.devtools-open : Rectangle {
                 width: 100%;
                 height: 100%;
-                background: #0d0d12;
+                background: Theme.bg-base;
                 VerticalLayout {
-                    padding: 14px;
-                    spacing: 10px;
+                    padding: 16px;
+                    spacing: 12px;
                     HorizontalLayout {
                         spacing: 8px;
                         Text {
                             text: "DevTools";
-                            color: #ffffff;
-                            font-size: 20px;
+                            color: Theme.text-hi;
+                            font-size: 18px;
+                            font-weight: 600;
                             vertical-alignment: center;
                         }
                         Text {
                             text: root.dev-status;
-                            color: #8a8a9a;
+                            color: Theme.text-mid;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                         }
-                        Button {
-                            text: root.dev-tab == 0 ? "● Console" : "Console";
+                        TextBtn {
+                            label: "Console";
+                            active: root.dev-tab == 0;
                             clicked => { root.dev-tab = 0; }
                         }
-                        Button {
-                            text: root.dev-tab == 1 ? "● Rede" : "Rede";
+                        TextBtn {
+                            label: "Rede";
+                            active: root.dev-tab == 1;
                             clicked => { root.dev-tab = 1; }
                         }
-                        Button {
-                            text: "Limpar";
+                        TextBtn {
+                            label: "Limpar";
                             clicked => { root.clear-devtools(); }
                         }
-                        Button {
-                            text: "Fechar";
+                        TextBtn {
+                            label: "Fechar";
                             clicked => { root.devtools-open = false; }
                         }
                     }
@@ -672,23 +742,26 @@ export component MainWindow inherits Window {
                                     text: c.level;
                                     width: 58px;
                                     vertical-alignment: center;
-                                    color: c.level == "error" ? #ff8a8a
+                                    color: c.level == "error" ? Theme.danger
                                         : c.level == "warn" ? #ffd47a
-                                        : c.level == "result" ? #8affc0
+                                        : c.level == "result" ? Theme.ok
                                         : c.level == "eval" ? #9ab8ff
-                                        : #9aa0b4;
+                                        : Theme.text-mid;
                                 }
                                 Text {
                                     text: c.text;
-                                    color: #e6e6f0;
+                                    color: Theme.text-hi;
                                     overflow: elide;
                                     vertical-alignment: center;
                                 }
                             }
                         }
-                        LineEdit {
-                            placeholder-text: "Avaliar JavaScript e teclar Enter (ex.: document.title)";
-                            accepted(t) => { root.dev-eval(t); self.text = ""; }
+                        evalfield := SearchField {
+                            placeholder: "Avaliar JavaScript e teclar Enter (ex.: document.title)";
+                            accepted(t) => {
+                                root.dev-eval(t);
+                                evalfield.text = "";
+                            }
                         }
                     }
 
@@ -698,8 +771,10 @@ export component MainWindow inherits Window {
                         ListView {
                             for n[idx] in root.dev-net : Rectangle {
                                 height: 26px;
-                                background: ntouch.has-hover || root.dev-net-sel == idx ? #1c1c28 : transparent;
+                                border-radius: Theme.radius-btn;
+                                background: ntouch.has-hover || root.dev-net-sel == idx ? Theme.bg-elevated : transparent;
                                 ntouch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => { root.dev-net-sel = idx; }
                                 }
                                 HorizontalLayout {
@@ -712,14 +787,14 @@ export component MainWindow inherits Window {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: n.status == "" ? "..." : n.status;
+                                        text: n.status == "" ? "…" : n.status;
                                         width: 80px;
-                                        color: #8affc0;
+                                        color: Theme.ok;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: n.url;
-                                        color: #e6e6f0;
+                                        color: Theme.text-hi;
                                         overflow: elide;
                                         vertical-alignment: center;
                                     }
@@ -734,38 +809,38 @@ export component MainWindow inherits Window {
                                 alignment: start;
                                 Text {
                                     text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
-                                    color: #ffffff;
+                                    color: Theme.text-hi;
                                     wrap: word-wrap;
                                 }
                                 Text {
                                     text: "Status: " + root.dev-net[root.dev-net-sel].status + "    MIME: " + root.dev-net[root.dev-net-sel].mime;
-                                    color: #c0c4d8;
+                                    color: Theme.text-hi;
                                 }
                                 Text {
                                     text: "— Request headers —";
-                                    color: #8a8a9a;
+                                    color: Theme.text-mid;
                                 }
                                 Text {
                                     text: root.dev-net[root.dev-net-sel].req-headers;
-                                    color: #c0c4d8;
+                                    color: Theme.text-hi;
                                     wrap: word-wrap;
                                 }
                                 Text {
                                     text: "— Response headers —";
-                                    color: #8a8a9a;
+                                    color: Theme.text-mid;
                                 }
                                 Text {
                                     text: root.dev-net[root.dev-net-sel].resp-headers;
-                                    color: #c0c4d8;
+                                    color: Theme.text-hi;
                                     wrap: word-wrap;
                                 }
                                 Text {
                                     text: "— Body —";
-                                    color: #8a8a9a;
+                                    color: Theme.text-mid;
                                 }
                                 Text {
                                     text: root.dev-net[root.dev-net-sel].body;
-                                    color: #c0c4d8;
+                                    color: Theme.text-hi;
                                     wrap: word-wrap;
                                 }
                             }
