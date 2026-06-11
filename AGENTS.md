@@ -37,5 +37,6 @@ Marco **M4 ✅** — recursos: **multi-aba** (`src/main.rs` `TabManager`/`Tab`: 
 aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do
 M3; abas de fundo throttled). **Histórico**+**favoritos**+**restauração de sessão** em JSON
 (`src/persist.rs`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs`; L-007). Decisões em
-**ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo:
-**M6** (devtools/inspeção). Harness **H1** ok.
+**ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo
+(re-priorizado 2026-06-11): **M6 = recursos de usuário** (cookies/`localStorage` persistentes via
+`opts.config_dir`; downloads), **M7 = devtools**. Harness **H1** ok.

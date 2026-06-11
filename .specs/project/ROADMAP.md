@@ -1,9 +1,10 @@
 # Roadmap
 
-**Current Milestone:** M6 — Devtools / inspeção (PLANNED)
+**Current Milestone:** M6 — Recursos de usuário (cookies/storage, downloads) (PLANNED)
 **Status:** M0–M5 ✅ concluídos (M0–M4 em 2026-06-10; **M5 em 2026-06-11** — tese VALIDADA, ADR-0008).
-Próximo: **M6** (devtools/inspeção). Recursos de usuário (downloads/cookies) e sustentabilidade (CI do
-Servo) ficam pós-M6 (ver Future Considerations).
+**Re-priorização (2026-06-11, decisão do usuário):** **M6 = recursos de usuário** (cookies/`localStorage`
+persistentes, downloads); **M7 = devtools/inspeção** (era M6). Sustentabilidade (CI do Servo) e outras
+plataformas ficam pós-M7 (ver Future Considerations).
 
 ---
 
@@ -175,17 +176,45 @@ os estados; o "ordens de magnitude" do PROJECT foi **qualificado** (é ~1,8× em
 
 ---
 
-## M6 — Devtools / inspeção — PLANNED
+## M6 — Recursos de usuário (cookies/storage, downloads) — PLANNED
 
-**Goal:** Inspeção de DOM/console via os devtools do Servo (`servo-devtools`/`-traits`), com UI mínima
-de inspeção no chrome. Pesquisar a superfície de devtools exposta pelo `servo 0.2.0` (maior incerteza
-de API). Depende do M5 (browser comprovadamente leve) estar fechado.
+**Goal:** Recursos que faltam para o browser ser usável de verdade no dia a dia: **persistência de
+cookies + `localStorage`/`sessionStorage`** entre execuções, e **downloads**. (Favoritos, histórico e
+restauração de sessão já vieram no M4.) Detalhes/sequência a definir em Plan Mode.
+
+### Features (escopo confirmado na FONTE do `servo 0.2.0`)
+
+**Persistência de cookies + Web Storage** - PLANNED (âncora, baixo risco)
+
+- Hoje rodamos `ServoBuilder::default()` SEM `Opts` ⇒ nada persiste. O Servo passa `opts.config_dir`
+  para `new_resource_threads` (cookies) **e** `new_storage_threads` (local/session), com
+  `temporary_storage` (default `false`). ⇒ Setar **`opts.config_dir`** (sob `~/.config/basedbrowser/`)
+  persiste cookies + Web Storage entre execuções. Mexe no `ServoBuilder`/`Opts` (API do Servo → Opus).
+
+**Gerenciar dados do site (limpar)** - PLANNED
+
+- `servo.site_data_manager()` (`SiteDataManager`) expõe `clear_cookies()`, `clear_session_cookies()`,
+  `clear_site_data(sites, StorageType)`, `site_data(StorageType)`, get/set cookies. ⇒ UI mínima de
+  "limpar cookies / dados de navegação" no chrome.
+
+**Downloads** - PLANNED (risco/incerteza — parte mais dura)
+
+- **O `servo 0.2.0` NÃO tem API de download de primeira classe** (sem tipo `Download` no crate nem em
+  `embedder_traits`). Caminho provável: interceptar respostas (`WebResourceLoad::intercept` / network
+  manager) com `Content-Disposition: attachment` ou MIME não-renderizável e salvar os bytes nós mesmos
+  + UI de progresso. **Escopo a decidir em Plan Mode** (pode virar sub-marco se a interceptação não der).
 
 ---
 
-## Future Considerations (pós-M6)
+## M7 — Devtools / inspeção — PLANNED (era M6)
 
-- **Recursos de usuário:** política de download, persistência de cookies/`localStorage` (há
-  `site_data_manager`/`storage` no `servo` 0.2.0 — confirmar na fonte).
+**Goal:** Inspeção de DOM/console via os devtools do Servo (`servo-devtools`/`-traits`), com UI mínima
+de inspeção no chrome. Pesquisar a superfície de devtools exposta pelo `servo 0.2.0` (maior incerteza
+de API).
+
+---
+
+## Future Considerations (pós-M7)
+
 - **Sustentabilidade:** runbook + CI de atualização do pin do Servo (Goal #3; mitiga L-001). Harness H3.
 - Suporte a outras plataformas (Windows/DirectX, macOS/Metal, Android).

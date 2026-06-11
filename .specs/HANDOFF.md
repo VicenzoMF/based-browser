@@ -26,12 +26,16 @@
 - Nada — checkpoint limpo na `main` (T1–T7 commitados+pushados). Gate verde (fmt/clippy `--exclude
   servo-poc`/6 testes).
 
-## Pending (próximos marcos)
+## Pending (próximos marcos) — re-priorizado em 2026-06-11 (usuário)
 
-1. **M6 — devtools/inspeção** (decisão do usuário): inspeção DOM/console via `servo-devtools`/`-traits`.
-   Pesquisar a superfície de devtools do `servo 0.2.0` na fonte (maior incerteza de API). Ver ROADMAP "M6".
-2. (deferred do M5) **Otimizar o baseline absoluto** (171 MiB ociosos — single-process carrega o stack
-   inteiro); **relatório interno do Servo** cruzado com o RSS; (M3) **sync GPU por fence/semáforo**.
+1. **M6 — recursos de usuário** (NOVO foco): **persistência de cookies + `localStorage`/`sessionStorage`**
+   (âncora: setar `opts.config_dir` no `ServoBuilder`; hoje usamos `default()` sem `Opts` → nada
+   persiste), **gerenciar dados** (`SiteDataManager`: `clear_cookies`/`clear_site_data`/…), e
+   **downloads** (parte dura — `servo 0.2.0` NÃO tem API de download; via interceptação + salvar bytes).
+   Ver ROADMAP "M6". **Pesquisa de fonte já iniciada** (config_dir/SiteDataManager/Opts confirmados).
+2. **M7 — devtools/inspeção** (era M6): inspeção DOM/console via `servo-devtools`/`-traits`.
+3. (deferred do M5) **Otimizar o baseline absoluto** (171 MiB ociosos); **relatório interno do Servo**
+   cruzado com o RSS; (M3) **sync GPU por fence/semáforo**.
 
 ## Blockers
 
