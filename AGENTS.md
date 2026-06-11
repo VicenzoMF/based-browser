@@ -24,6 +24,19 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
+Marco **M6 ✅** — **recursos de usuário** (fecha a lacuna do dia a dia). **Persistência de cookies +
+`localStorage`/`sessionStorage`**: `init_manager` (`src/main.rs`) aplica
+`ServoBuilder.opts(Opts{ config_dir: Some(persist::servo_config_dir() = ~/.config/basedbrowser/servo/),
+..Opts::default() })` (temporary_storage=false ⇒ persiste; Servo passa o `config_dir` p/
+`new_resource_threads`+`new_storage_threads`). Mexida MÍNIMA/aditiva na API do Servo (1 ponto; L-001),
+não mexe no init lazy do GL (L-004), honra `XDG_CONFIG_HOME` (ADR-0008). **"Limpar dados de navegação"**
+(botão no `ui/app.slint` → `clear_browsing_data`): `clear_cookies()` + `clear_site_data(sites, Local|
+Session)` via `servo.site_data_manager()` + `persist::clear_history()`; PRESERVA favoritos/sessão; em
+callback de UI (fora do `spin_event_loop`; ADR-0007). **Downloads DEFERIDO** — spike concluiu inviável
+na API estável do `servo 0.2.0` (embedder não vê headers de resposta; sem API de download/link/menu).
+Decisões em **ADR-0009** · **AD-012** · **L-009**. Evidência (sem captura de janela, L-008): drivers
+`BASEDBROWSER_{PERSIST,CLEAR}_TEST` + **`scripts/m6/`** (`verify-persist.sh`, `verify-clear.sh`,
+`pages/persist.html`). Nenhuma dep nova. Próximo: **M7 = devtools/inspeção**.
 Marco **M5 ✅** — **tese validada (footprint vs. Chromium)**, o Goal #1 do PROJECT. Harness de medição
 reproduzível em bash (**`scripts/m5/`**: `measure.sh` soma a ÁRVORE DE PROCESSOS via
 `/proc/<pid>/smaps_rollup` com PPID-walk; `run.sh` roda a matriz; `pages/{idle,heavy}.html`). Metodologia
@@ -37,6 +50,5 @@ Marco **M4 ✅** — recursos: **multi-aba** (`src/main.rs` `TabManager`/`Tab`: 
 aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do
 M3; abas de fundo throttled). **Histórico**+**favoritos**+**restauração de sessão** em JSON
 (`src/persist.rs`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs`; L-007). Decisões em
-**ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo
-(re-priorizado 2026-06-11): **M6 = recursos de usuário** (cookies/`localStorage` persistentes via
-`opts.config_dir`; downloads), **M7 = devtools**. Harness **H1** ok.
+**ADR-0007, AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003).
+**M6 ✅ acima**; próximo **M7 = devtools**. Harness **H1** ok.

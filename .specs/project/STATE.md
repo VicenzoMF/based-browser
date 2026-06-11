@@ -1,13 +1,30 @@
 # State
 
 **Last Updated:** 2026-06-11
-**Current Work:** **Marco M5 CONCLUÍDO** ✅ — **validar a tese (footprint/RAM vs. Chromium)**, o Goal #1 do PROJECT, que nunca tinha sido medido. Harness de medição **reproduzível** em bash (`scripts/m5/`: `measure.sh` soma a ÁRVORE DE PROCESSOS via `/proc/<pid>/smaps_rollup` — PPID-walk, pois o children-file está ausente no kernel; `run.sh` roda a matriz; `pages/{idle,heavy}.html` determinísticas, sem rede). Metodologia JUSTA (confirmada na fonte: `Opts.multiprocess` default=`false` → **BasedBrowser é single-process**; **Chrome é multiprocess**): perfil limpo nos dois (`XDG_CONFIG_HOME`/`--user-data-dir`), headful, **release** (L-005), K=5 (pass^k, mediana robusta), **PSS** como métrica-título (RSS junto). Única mudança de produto = hook env `BASEDBROWSER_OPEN_TABS=N` (abre N abas p/ o custo por-aba; embedding fino, L-001). **VEREDITO: tese VALIDADA** — BasedBrowser é mais leve que o Chrome em TODOS os estados: ocioso **171,1 MiB PSS (1 proc) vs 314,7 MiB (13 proc) = 1,84×**; por-aba **5,5 vs 11,8 MiB = 2,16×**; pesada 205 vs 333 MiB. PORÉM o "ordens de magnitude" do PROJECT é **refutado/qualificado** — na métrica justa (PSS) é ~1,8×, não 10× (o RSS ×5,2 infla o Chrome por contar páginas compartilhadas ~13×). Decisão+números em **ADR-0008** (datado, imutável; design-for-rot). Relatório interno do Servo (`create_memory_report`) **adiado** (L-001: 4+ superfícies de API de crate interno; veredito não depende). **Re-priorização (2026-06-11, usuário): M6 = recursos de usuário** (cookies/`localStorage` persistentes via `opts.config_dir`; downloads — sem API de 1ª classe no Servo, parte dura) **e M7 = devtools** (era M6). Sobre o M4 (ADR-0007/AD-010/L-007) abaixo.
+**Current Work:** **Marco M6 CONCLUÍDO** ✅ — **recursos de usuário**: fecha a lacuna que impedia o uso no dia a dia. **Persistência de cookies + `localStorage`/`sessionStorage`** entre execuções — `init_manager` agora aplica `ServoBuilder.opts(Opts{ config_dir: Some(~/.config/basedbrowser/servo/), ..Opts::default() })` (temporary_storage=false ⇒ persiste; o Servo passa o `config_dir` p/ `new_resource_threads` (cookies) E `new_storage_threads` (storage)). Mexida MÍNIMA e aditiva na API do Servo (1 ponto; embedding fino, L-001); não reorganiza o init lazy do GL (L-004); honra `XDG_CONFIG_HOME` (perfis-limpos do ADR-0008). **"Limpar dados de navegação"** (botão no chrome) = `clear_cookies()` + `clear_site_data(sites, Local|Session)` via `SiteDataManager` + `persist::clear_history()`; PRESERVA favoritos e a sessão (convenção de browser); roda em callback de UI (fora do `spin_event_loop`; invariante anti-reentrância do ADR-0007). **Downloads: SPIKE CONCLUÍDO — inviável na API estável do `servo 0.2.0`** (o embedder não vê os headers da RESPOSTA; `load_web_resource` só dá a request, `.intercept()` FORNECE a resposta, `network_manager()` só cache, `fetch_async` interno; sem API de download/link/menu) ⇒ auto-detecção de attachment é arquiteturalmente impossível, o workaround degrada p/ "cole-uma-URL" a custo real → **DEFERIDO** (não forçar). Decisões+veredito em **ADR-0009**; **AD-012** + **L-009** abaixo. Evidência reproduzível (sem captura de janela, L-008): drivers gated `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (`verify-persist.sh`: RUN2 lê `cookie=42 local=persisted-99`; `verify-clear.sh`: cookies/histórico→0, favoritos preservados). Nenhuma dep nova; config protegida intocada. 5 commits atômicos (T1–T5). **Próximo: M7 = devtools/inspeção.**
+
+**Marco M5 CONCLUÍDO** ✅ — **validar a tese (footprint/RAM vs. Chromium)**, o Goal #1 do PROJECT, que nunca tinha sido medido. Harness de medição **reproduzível** em bash (`scripts/m5/`: `measure.sh` soma a ÁRVORE DE PROCESSOS via `/proc/<pid>/smaps_rollup` — PPID-walk, pois o children-file está ausente no kernel; `run.sh` roda a matriz; `pages/{idle,heavy}.html` determinísticas, sem rede). Metodologia JUSTA (confirmada na fonte: `Opts.multiprocess` default=`false` → **BasedBrowser é single-process**; **Chrome é multiprocess**): perfil limpo nos dois (`XDG_CONFIG_HOME`/`--user-data-dir`), headful, **release** (L-005), K=5 (pass^k, mediana robusta), **PSS** como métrica-título (RSS junto). Única mudança de produto = hook env `BASEDBROWSER_OPEN_TABS=N` (abre N abas p/ o custo por-aba; embedding fino, L-001). **VEREDITO: tese VALIDADA** — BasedBrowser é mais leve que o Chrome em TODOS os estados: ocioso **171,1 MiB PSS (1 proc) vs 314,7 MiB (13 proc) = 1,84×**; por-aba **5,5 vs 11,8 MiB = 2,16×**; pesada 205 vs 333 MiB. PORÉM o "ordens de magnitude" do PROJECT é **refutado/qualificado** — na métrica justa (PSS) é ~1,8×, não 10× (o RSS ×5,2 infla o Chrome por contar páginas compartilhadas ~13×). Decisão+números em **ADR-0008** (datado, imutável; design-for-rot). Relatório interno do Servo (`create_memory_report`) **adiado** (L-001: 4+ superfícies de API de crate interno; veredito não depende). **Re-priorização (2026-06-11, usuário): M6 = recursos de usuário** (cookies/`localStorage` persistentes via `opts.config_dir`; downloads — sem API de 1ª classe no Servo, parte dura) **e M7 = devtools** (era M6). Sobre o M4 (ADR-0007/AD-010/L-007) abaixo.
 
 **M4 (anterior):** **recursos de navegador** — o browser virou usável no dia a dia. **Multi-aba** (`TabManager`/`Tab` em `src/main.rs`): UM `Servo`, N `WebView`s, cada aba com seu `OffscreenRenderingContext` (FBO próprio) derivado do `WindowRenderingContext` pai; **só a aba ATIVA é pintada/blitada → reusa a ponte GPU zero-copy do M3 trocando só a origem do blit** (FBO da ativa); abas de fundo `set_throttled(true)`, não bombeadas. Barra de abas (`ui/app.slint`): abrir(+)/fechar(×)/trocar(clique); `window.open`/`target=_blank` via fila diferida (`pending_new`). O `Embedder` roteia callbacks por `webview.id()` → `TabState`, marca `chrome_dirty`, e o LOOP re-sincroniza a aba ativa → props do Slint (preserva o invariante anti-reentrância: delegate só faz borrow IMUTÁVEL; `manager` via `Weak`, sem ciclo Rc). **Persistência** (`src/persist.rs`, deps `serde`/`serde_json`/`dirs`): JSON em `~/.config/basedbrowser/` com escrita atômica (tmp+rename), tolerante a falha. **Favoritos** (★/barra, `bookmarks.json`), **histórico** (visitas por `notify_url_changed`, `history.json`, dedup+teto FIFO 1000; painel ☰ com busca + autocomplete na barra), **restauração de sessão** (`session.json`: URLs+ativa salvas no exit, restauradas no `init_manager`; precede o `BASEDBROWSER_URL`). **Chrome migrado** da macro inline grande p/ `ui/app.slint` via **re-export inline** (`slint::slint!(export {..} from "../ui/app.slint")`) — NÃO `build.rs`/`include_modules!()` (que injetaria o gerado como fonte do crate → 640 erros nos lints `deny`; a macro inline é isenta do clippy). Decisões em **ADR-0007** (estende 0003/0004/0005). **Evidência (smoke headless, captura de janela bloqueada no Wayland → drivers in-app + dumps):** abrir/trocar/fechar com conteúdo distinto por aba (aba1 VERDE/page2 no FBO próprio, ativa final ROXO/aba0); `window.open` → 2 abas; favoritos+histórico carregam entre execuções; sessão de 2 abas (ativa=1) restaurada. M0–M3 (zero-copy/input/resize) intactos; clippy `-D warnings`+fmt+6 testes verdes. **Próximo: M5** (a definir — ver ROADMAP "Future Considerations"). Pendências humanas (não bloqueiam): conectores globais claude.ai só na web; 2 deny rules do AgentShield no `settings.json`; README.md na raiz (opcional). Otimizações adiadas do M3: sync por fence/semáforo no lugar do `glFinish`; intervalo de polling adaptativo do event-loop.
 
 ---
 
 ## Recent Decisions (Last 60 days)
+
+### AD-012: M6 — persistência por padrão + limpar dados; downloads deferido (2026-06-11)
+
+**Decision:** LIGAR a persistência de cookies/Web Storage POR PADRÃO (`opts.config_dir` setado em
+`init_manager`, `temporary_storage=false`); adicionar "limpar dados de navegação" (cookies + Web
+Storage via `SiteDataManager` + nosso histórico, PRESERVANDO favoritos/sessão); e **DEFERIR downloads**
+(spike concluiu inviável na API estável do `servo 0.2.0`). Formalizado no **ADR-0009**.
+**Reason:** Persistir é a lacuna que o M6 existe p/ fechar (logins sobrevivem); privacidade fica sob
+controle do usuário via "limpar dados" (convenção de browser preserva favoritos). Downloads: o Servo
+0.2.0 não expõe os headers da RESPOSTA ao embedder (nem API de download/link/menu) → auto-detecção
+impossível e workaround degradado a custo real → não forçar (confirmado na fonte).
+**Trade-off:** Sem modo efêmero (candidato a toggle futuro); clear de Web Storage é escopado por
+domínio registrado (localhost/IPs não enumerados — caveat); sem downloads no M6.
+**Impact:** Browser usável no dia a dia (logins persistem; controle de dados). Mexida na API do Servo
+mínima (1 ponto; embedding fino, L-001). Base p/ o M7 (devtools). Nenhuma dep nova.
 
 ### AD-011: M5 — metodologia de medição de footprint + veredito da tese (2026-06-11)
 
@@ -174,6 +191,24 @@ pt-BR imprime `,` decimal → **`LC_ALL=C`** ou o JSON sai inválido.
 a tese com metodologia frouxa. **Processo:** o veredito (validada, mas ~1,8× e não "ordens de magnitude")
 foi documentado honestamente no ADR-0008 — refutar a hipérbole é tão importante quanto validar o núcleo.
 
+### L-009: Downloads no Servo 0.2.0 — sem inspeção de RESPOSTA ⇒ auto-detecção impossível (2026-06-11)
+
+**Context:** No M6 (spike de downloads), avaliando como detectar e salvar um arquivo quando o servidor
+responde `Content-Disposition: attachment`.
+**Problem/aprendizado:** o que DEFINE downloads (detectar a resposta) depende de ver os **headers da
+RESPOSTA**, e o Servo 0.2.0 **não os expõe ao embedder**: `WebViewDelegate::load_web_resource`/
+`WebResourceLoad` só dá a *request*; `.intercept()` faz você FORNECER a resposta (não recebe bytes);
+`Servo::network_manager()` só mexe em cache; `net_traits::fetch_async` é crate interno; `EmbedderMsg`/
+`WebViewDelegate` não têm variante de download; não há API de menu/contexto de link. Um download
+"iniciado pelo usuário" (GET nosso) degrada p/ "cole-uma-URL" (sem contexto de link) e exige hand-roll
+de HTTP/TLS (~250 linhas mantidas por nós) ou dep nova fora do cache.
+**Solution:** **deferir** o download completo, documentando a razão técnica + onde destrava no ADR-0009
+(não forçar uma feature degradada nem inflar o crate de churn — L-001). O spike cumpriu seu papel:
+provar inviabilidade é um resultado tão válido quanto implementar.
+**Prevents:** queimar esforço num subsistema HTTP paralelo (ou numa UX degradada) por uma capacidade
+que a API estável do motor simplesmente não suporta hoje. **Processo:** confirmar NA FONTE (4 crates do
+servo) antes de decidir; a decisão de escopo (deferir) foi do usuário, informada pelo spike.
+
 ## Quick Tasks Completed
 
 | #   | Description | Date | Commit | Status |
@@ -186,6 +221,9 @@ foi documentado honestamente no ADR-0008 — refutar a hipérbole é tão import
 - [x] **Medição sistemática de RAM vs. Chromium para validar a tese central** — feito (M5, ADR-0008): harness `scripts/m5/`, **tese VALIDADA** (BB 1,84× mais leve ocioso em PSS, 2,16× por aba), "ordens de magnitude" qualificado p/ ~1,8×
 - [ ] **Relatório interno do Servo** (`create_memory_report` → breakdown JS-heap/layout) cruzado com o RSS do SO — adiado no M5 (L-001: 4+ superfícies de API de crate interno; acessível via `servo::profile_traits`, `lib.rs:54`) — Captured during: M5
 - [ ] **Otimizar o baseline absoluto** (171 MiB ociosos não são "featherweight"; single-process carrega SpiderMonkey+layout+wgpu/Vulkan+Slint) — candidato a marco futuro; M5 só MEDIU — Captured during: M5
+- [ ] **Downloads de arquivos** — deferido no M6 (L-009/ADR-0009): inviável na API estável do `servo 0.2.0` (embedder não vê headers de resposta; sem API de download/link/menu). Destrava quando o Servo expuser um hook de resposta/evento de download, OU num marco dedicado com cliente HTTP próprio — Captured during: M6
+- [ ] **Modo privado/efêmero** (toggle `Opts.temporary_storage=true` na UI) — M6 persiste por padrão; um modo sem persistência fica p/ depois — Captured during: M6
+- [ ] **`clear_session_cookies()`** (limpar só cookies de sessão) como opção granular no "limpar dados" — Captured during: M6
 - [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
 - [ ] Render-diff / "olhos" E2E — **destravado (M1 ✅)**; nota: captura de **janela** automatizada está bloqueada no GNOME 46/Wayland (gdbus negado; `import`/X11 não vê Wayland). Caminho viável p/ E2E: dump in-app do frame (`BASEDBROWSER_DUMP_FRAME=<path>`) e comparar PNGs — Captured during: harness H2
 - [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
@@ -215,6 +253,7 @@ foi documentado honestamente no ADR-0008 — refutar a hipérbole é tão import
 - [x] **M3: render GPU zero-copy** — feito (ADR-0005/0006, AD-009, L-006): texture sharing via memória externa Vulkan↔GL (`src/gpu_bridge.rs`), renderer `femtovg-wgpu`. Evidência: readback da textura compartilhada idêntico à fonte (byte a byte) + example.com via HTTPS. Benchmark: pump −40% (5,4→3,1 ms). Commits T0 (renderer), T1 (benchmark), T2–T4 (zero-copy)
 - [x] **M4: recursos de navegador** — feito (ADR-0007, AD-010, L-007): multi-aba (`TabManager`/`Tab`, reusa a ponte GPU do M3), `window.open`, favoritos/histórico/sessão persistidos em JSON (`src/persist.rs`, `serde`/`serde_json`/`dirs`), painel+autocomplete de histórico, restauração de sessão. Chrome → `ui/app.slint` (re-export inline, sem build.rs). Evidência: drivers in-app (`BASEDBROWSER_TAB_TEST`/`BOOKMARK_TEST`/`HISTORY_TEST`) + dumps por aba. 8 commits (T1–T7 + T4b)
 - [x] **M5: validar a tese (footprint vs. Chromium)** — feito (ADR-0008, AD-011, L-008): harness bash `scripts/m5/` (`measure.sh`+`run.sh`+`pages/`), PPID-walk de `/proc/smaps_rollup`, PSS-título, soma da árvore, perfil limpo, release, K=5. Hook `BASEDBROWSER_OPEN_TABS`. **Tese VALIDADA** (ocioso BB 171,1 MiB PSS / 1 proc vs Chrome 314,7 / 13 proc = 1,84×; por-aba 5,5 vs 11,8 MiB = 2,16×; pesada 205 vs 333 MiB). "Ordens de magnitude" qualificado p/ ~1,8× (PSS). Commits atômicos T1–T7
+- [x] **M6: recursos de usuário** — feito (ADR-0009, AD-012, L-009): persistência de cookies + Web Storage via `opts.config_dir` (`init_manager`); "limpar dados de navegação" (cookies/storage via `SiteDataManager` + histórico, preserva favoritos); downloads DEFERIDO (inviável na API estável do Servo 0.2.0). Evidência: drivers `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (verify-persist: RUN2 lê `cookie=42 local=persisted-99`; verify-clear: cookies/histórico→0, favoritos preservados). Nenhuma dep nova. 5 commits T1–T5
 
 ---
 

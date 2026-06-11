@@ -1,10 +1,12 @@
 # Roadmap
 
-**Current Milestone:** M6 — Recursos de usuário (cookies/storage, downloads) (PLANNED)
-**Status:** M0–M5 ✅ concluídos (M0–M4 em 2026-06-10; **M5 em 2026-06-11** — tese VALIDADA, ADR-0008).
-**Re-priorização (2026-06-11, decisão do usuário):** **M6 = recursos de usuário** (cookies/`localStorage`
-persistentes, downloads); **M7 = devtools/inspeção** (era M6). Sustentabilidade (CI do Servo) e outras
-plataformas ficam pós-M7 (ver Future Considerations).
+**Current Milestone:** M7 — Devtools / inspeção (PLANNED)
+**Status:** M0–M6 ✅ concluídos (M0–M4 em 2026-06-10; **M5 e M6 em 2026-06-11**). M5 = tese VALIDADA
+(ADR-0008). **M6 = recursos de usuário** (cookies/Web Storage PERSISTEM; "limpar dados"; downloads
+DEFERIDO — inviável na API estável do Servo 0.2.0, ADR-0009).
+**Re-priorização (2026-06-11, decisão do usuário):** **M6 = recursos de usuário**; **M7 = devtools/
+inspeção** (era M6). Sustentabilidade (CI do Servo) e outras plataformas ficam pós-M7 (ver Future
+Considerations).
 
 ---
 
@@ -176,33 +178,38 @@ os estados; o "ordens de magnitude" do PROJECT foi **qualificado** (é ~1,8× em
 
 ---
 
-## M6 — Recursos de usuário (cookies/storage, downloads) — PLANNED
+## M6 — Recursos de usuário (cookies/storage, limpar dados) ✅ CONCLUÍDO (2026-06-11)
 
-**Goal:** Recursos que faltam para o browser ser usável de verdade no dia a dia: **persistência de
-cookies + `localStorage`/`sessionStorage`** entre execuções, e **downloads**. (Favoritos, histórico e
-restauração de sessão já vieram no M4.) Detalhes/sequência a definir em Plan Mode.
+**Goal:** Fechar a lacuna que impedia o uso no dia a dia: **persistência de cookies +
+`localStorage`/`sessionStorage`** entre execuções + ação de **"limpar dados de navegação"**.
+**Atingido** — decisões em **ADR-0009**. Downloads: spike concluído inviável → **deferido**. Nenhuma
+dep nova; config protegida intocada. 5 commits atômicos (T1–T5).
 
-### Features (escopo confirmado na FONTE do `servo 0.2.0`)
+### Features
 
-**Persistência de cookies + Web Storage** - PLANNED (âncora, baixo risco)
+**Persistência de cookies + Web Storage** - DONE
 
-- Hoje rodamos `ServoBuilder::default()` SEM `Opts` ⇒ nada persiste. O Servo passa `opts.config_dir`
-  para `new_resource_threads` (cookies) **e** `new_storage_threads` (local/session), com
-  `temporary_storage` (default `false`). ⇒ Setar **`opts.config_dir`** (sob `~/.config/basedbrowser/`)
-  persiste cookies + Web Storage entre execuções. Mexe no `ServoBuilder`/`Opts` (API do Servo → Opus).
+- `init_manager` aplica `ServoBuilder.opts(Opts{ config_dir: Some(~/.config/basedbrowser/servo/),
+  ..Opts::default() })` (temporary_storage=false ⇒ persiste). Mexida MÍNIMA e aditiva na API do Servo
+  (1 ponto; embedding fino, L-001); não reorganiza o init lazy do GL (L-004); honra `XDG_CONFIG_HOME`
+  (preserva perfis-limpos do ADR-0008). **Verificado** (`scripts/m6/verify-persist.sh`): RUN2 lê o
+  cookie+localStorage setados no RUN1.
 
-**Gerenciar dados do site (limpar)** - PLANNED
+**Limpar dados de navegação** - DONE
 
-- `servo.site_data_manager()` (`SiteDataManager`) expõe `clear_cookies()`, `clear_session_cookies()`,
-  `clear_site_data(sites, StorageType)`, `site_data(StorageType)`, get/set cookies. ⇒ UI mínima de
-  "limpar cookies / dados de navegação" no chrome.
+- Botão "Limpar dados" → `clear_cookies()` + `clear_site_data(sites, Local|Session)` (via
+  `SiteDataManager`) + `persist::clear_history()`. PRESERVA favoritos e a sessão. Roda em callback de
+  UI (fora do `spin_event_loop`; invariante anti-reentrância do ADR-0007). **Verificado**
+  (`scripts/m6/verify-clear.sh`): cookies/histórico → 0, favoritos preservados.
 
-**Downloads** - PLANNED (risco/incerteza — parte mais dura)
+**Downloads** - DEFERRED (spike concluído — ADR-0009)
 
-- **O `servo 0.2.0` NÃO tem API de download de primeira classe** (sem tipo `Download` no crate nem em
-  `embedder_traits`). Caminho provável: interceptar respostas (`WebResourceLoad::intercept` / network
-  manager) com `Content-Disposition: attachment` ou MIME não-renderizável e salvar os bytes nós mesmos
-  + UI de progresso. **Escopo a decidir em Plan Mode** (pode virar sub-marco se a interceptação não der).
+- **Inviável na API estável do `servo 0.2.0`:** o embedder NÃO vê os headers da RESPOSTA
+  (`load_web_resource` só dá a request; `.intercept()` FORNECE a resposta; `network_manager()` só
+  cache; `fetch_async` interno; sem API de download/link/menu). Auto-detecção de
+  `Content-Disposition: attachment` é arquiteturalmente impossível; o workaround degrada para
+  "cole-uma-URL" a custo real. **Deferido** (não forçar); destrava quando o Servo expuser um hook de
+  resposta/evento de download, ou num marco dedicado com stack HTTP próprio.
 
 ---
 
