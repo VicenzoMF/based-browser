@@ -29,8 +29,9 @@ mod persist;
 use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
-    DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext, RenderingContext, Servo,
-    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
+    CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext,
+    RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
+    WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
@@ -154,6 +155,16 @@ struct Embedder {
     manager: Weak<RefCell<Option<TabManager>>>,
     /// Sinaliza ao loop que o chrome (props da aba ativa) precisa ser re-sincronizado.
     chrome_dirty: Rc<Cell<bool>>,
+    /// Abas pedidas por `window.open`/`target=_blank` (`request_create_new`), construídas no delegate
+    /// mas AINDA não registradas no `TabManager` — adicioná-las exigiria `borrow_mut` durante o
+    /// `spin_event_loop` (reentrante). O loop drena esta fila pós-spin ([`integrate_pending_tabs`]).
+    pending_new: Rc<RefCell<Vec<PendingTab>>>,
+}
+
+/// Uma aba construída por `request_create_new` (window.open), aguardando integração no `TabManager`.
+struct PendingTab {
+    webview: WebView,
+    context: Rc<OffscreenRenderingContext>,
 }
 
 impl Embedder {
@@ -215,6 +226,46 @@ impl WebViewDelegate for Embedder {
         if let Some(state) = self.state_for(webview.id()) {
             *state.title.borrow_mut() = title.unwrap_or_default();
         }
+        self.chrome_dirty.set(true);
+    }
+
+    /// `window.open`/`target=_blank`: o conteúdo pediu uma `WebView` nova. Construímos AQUI (com um
+    /// offscreen próprio derivado do pai, que está corrente durante o spin) — guardar o handle vivo é
+    /// obrigatório, senão a `WebView` é destruída na hora. Mas adiamos REGISTRÁ-la como aba: empilhamos
+    /// na fila `pending_new` (`RefCell` separado) e o loop a integra pós-spin (evita `borrow_mut` do
+    /// `TabManager` reentrante durante `spin_event_loop`).
+    fn request_create_new(&self, parent: WebView, request: CreateNewWebViewRequest) {
+        let Some(cell) = self.manager.upgrade() else {
+            return;
+        };
+        // Pai + tamanho da aba ativa (borrow imutável, liberado antes de mexer no GL).
+        let (parent_ctx, size) = {
+            let guard = cell.borrow();
+            let Some(manager) = guard.as_ref() else {
+                return;
+            };
+            let size = manager.active_tab().map_or_else(
+                || dpi::PhysicalSize::new(1024, 700),
+                |tab| {
+                    let s = tab.context.size2d();
+                    dpi::PhysicalSize::new(s.width, s.height)
+                },
+            );
+            (manager.parent.clone(), size)
+        };
+        if let Err(e) = parent_ctx.make_current() {
+            eprintln!("[m4] window.open: make_current falhou: {e:?}");
+        }
+        let context = Rc::new(parent_ctx.offscreen_context(size));
+        let webview = request
+            .builder(context.clone())
+            .delegate(parent.delegate())
+            .hidpi_scale_factor(parent.hidpi_scale_factor())
+            .build();
+        self.pending_new
+            .borrow_mut()
+            .push(PendingTab { webview, context });
+        eprintln!("[m4] window.open: nova aba enfileirada (integra no próximo tick)");
         self.chrome_dirty.set(true);
     }
 }
@@ -832,6 +883,39 @@ fn wire_tabs(
     });
 }
 
+/// Integra (pós-spin) as abas que `window.open` enfileirou em `pending`: registra cada uma no
+/// `TabManager` (com seu `TabState`) e ativa a última. `borrow_mut` do manager é seguro aqui — roda no
+/// começo do tick, FORA do `spin_event_loop`. No-op se a fila está vazia.
+fn integrate_pending_tabs(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    pending: &Rc<RefCell<Vec<PendingTab>>>,
+    tabs_model: &Rc<VecModel<TabInfo>>,
+    chrome_dirty: &Rc<Cell<bool>>,
+) {
+    let drained: Vec<PendingTab> = pending.borrow_mut().drain(..).collect();
+    if drained.is_empty() {
+        return;
+    }
+    if let Some(tm) = manager.borrow_mut().as_mut() {
+        for tab in drained {
+            let state = Rc::new(TabState::default());
+            if let Some(url) = tab.webview.url() {
+                *state.url.borrow_mut() = url.to_string();
+            }
+            let index = tm.tabs.len();
+            tm.tabs.push(Tab {
+                webview: tab.webview,
+                context: tab.context,
+                state,
+            });
+            tm.set_active(index);
+        }
+        rebuild_tabs_model(tabs_model, tm);
+        chrome_dirty.set(true);
+        wake(tm);
+    }
+}
+
 /// Telemetria do hot path de frame, habilitada por `BASEDBROWSER_BENCH=1` (no-op quando ausente).
 /// Mede o tempo de cada `pump_frame` — exatamente o custo que o M3 ataca — e reporta a cada ~1 s:
 /// taxa de frames bombeados, média/p95/máx do tempo de pump em ms. A métrica é a MESMA na cópia-CPU
@@ -961,7 +1045,10 @@ fn lazy_init_manager(
     true
 }
 
-fn main() -> Result<(), slint::PlatformError> {
+/// Inicializa o provedor de cripto (TLS) e força o backend Slint femtovg sobre wgpu/Vulkan (M3,
+/// ADR-0005) — ANTES de criar qualquer janela/componente. O caminho zero-copy extrai o `VkDevice` cru
+/// do device que o Slint cria (`Automatic`) via `as_hal`.
+fn init_backend() -> Result<(), slint::PlatformError> {
     // Provedor de cripto process-wide p/ TLS. `install_default` falha se já houver um — ignorável.
     if rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
@@ -969,16 +1056,15 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         eprintln!("[m1] provedor de cripto rustls ja instalado (ok)");
     }
-
-    // M3 (ADR-0005): força o renderer femtovg sobre wgpu (Vulkan no Linux) ANTES de criar qualquer
-    // janela/componente. `Automatic` deixa o Slint criar instance/adapter/device wgpu; o caminho
-    // zero-copy do M3 extrai o VkDevice cru desse device via `as_hal`. Por ora (T0) o transporte de
-    // frame continua por cópia-CPU (`read_to_image`) — esta tarefa só de-risca a troca de renderer e
-    // a coexistência surfman/GL (Servo) + wgpu/Vulkan (Slint) na mesma janela (classe do L-004).
     slint::BackendSelector::new()
         .require_wgpu_28(slint::wgpu_28::WGPUConfiguration::default())
         .select()?;
     eprintln!("[m3] backend Slint: femtovg sobre wgpu/Vulkan (ADR-0005)");
+    Ok(())
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    init_backend()?;
 
     let app = MainWindow::new()?;
     app.set_frame(placeholder_frame(1024, 768));
@@ -997,13 +1083,16 @@ fn main() -> Result<(), slint::PlatformError> {
     let manager: Rc<RefCell<Option<TabManager>>> = Rc::new(RefCell::new(None));
     // Clone p/ salvar a sessão ao sair (o original é movido para o closure do timer).
     let exit_manager = manager.clone();
-    // M4: o `Embedder` segura um `Weak` do manager (sem ciclo Rc) p/ rotear callbacks por id, e um
-    // `chrome_dirty` compartilhado com o loop (que re-sincroniza a aba ativa → props do Slint).
+    // M4: o `Embedder` segura um `Weak` do manager (sem ciclo Rc) p/ rotear callbacks por id, um
+    // `chrome_dirty` compartilhado com o loop (que re-sincroniza a aba ativa → props do Slint), e a
+    // fila `pending_new` de abas pedidas por window.open (drenada pelo loop).
     let chrome_dirty = Rc::new(Cell::new(true));
+    let pending_new: Rc<RefCell<Vec<PendingTab>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::new(Embedder {
         data: app_data.clone(),
         manager: Rc::downgrade(&manager),
         chrome_dirty: chrome_dirty.clone(),
+        pending_new: pending_new.clone(),
     });
     let logged = Rc::new(Cell::new(false));
     // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
@@ -1033,6 +1122,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tick_wgpu = wgpu_ctx;
     let tick_chrome_dirty = chrome_dirty;
     let tick_tabs_model = tabs_model;
+    let tick_pending_new = pending_new;
     let init_ticks = Cell::new(0u32);
     let idle_ticks = Cell::new(0u32);
     let tick_bench = RefCell::new(FrameBench::new());
@@ -1047,6 +1137,14 @@ fn main() -> Result<(), slint::PlatformError> {
         ) {
             return;
         }
+
+        // M4: integra abas abertas por window.open (request_create_new) ANTES do borrow imutável.
+        integrate_pending_tabs(
+            &tick_manager,
+            &tick_pending_new,
+            &tick_tabs_model,
+            &tick_chrome_dirty,
+        );
 
         let guard = tick_manager.borrow();
         let Some(manager) = guard.as_ref() else {
