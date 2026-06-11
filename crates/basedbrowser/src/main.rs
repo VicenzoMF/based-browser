@@ -17,7 +17,7 @@
 //! branco). Adiar o init faz os dois renderers de hardware coexistirem na mesma janela.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
     DeviceIntRect, EventLoopWaker, LoadStatus, OffscreenRenderingContext, RenderingContext, Servo,
-    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WindowRenderingContext,
+    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
@@ -137,67 +137,85 @@ impl EventLoopWaker for ServoWaker {
     }
 }
 
-/// `WebViewDelegate`: ponte do Servo para a UI. Marca "sujo" quando há frame novo (lido pelo `Timer`)
-/// e dirige o chrome (URL, carregamento, voltar/avançar, título) via um handle fraco da janela. Roda
-/// na main thread durante `spin_event_loop`; só toca o `app` e a `WebView` recebida (nunca o
-/// `RefCell` do runtime), então não há risco de borrow reentrante.
+/// `WebViewDelegate`: ponte do Servo → estado POR-ABA (M4, ADR-0007). Cada callback do Servo carrega
+/// a `WebView` que o disparou; roteamos por `webview.id()` para o [`TabState`] da aba certa e
+/// atualizamos seus campos (interior-mutáveis). NÃO escrevemos no chrome aqui nem tocamos o `app`:
+/// marcamos `chrome_dirty` e o LOOP re-sincroniza a aba ATIVA → propriedades do Slint (centraliza as
+/// escritas de UI no loop, fora do `spin_event_loop`).
+///
+/// **Invariante de borrow:** durante `spin_event_loop` o loop segura um borrow IMUTÁVEL do `manager`;
+/// aqui só fazemos borrow IMUTÁVEL (achar a aba). `data` é um `RefCell` separado → `borrow_mut`
+/// (`record_visit`) não colide. O `manager` é `Weak` p/ não formar ciclo Rc
+/// (webview → delegate → Embedder → manager → webview).
 struct Embedder {
-    dirty: Cell<bool>,
-    app: slint::Weak<MainWindow>,
-    /// Estado de persistência (favoritos/histórico). M4: o delegate registra cada visita aqui (à
-    /// medida que a URL muda) e persiste. É um `RefCell` SEPARADO do `Runtime` — o loop nunca o
-    /// empresta durante `spin_event_loop`, então o `borrow_mut` no callback não é reentrante.
+    /// Estado de persistência (favoritos/histórico). `RefCell` separado do `manager`.
     data: Rc<RefCell<persist::AppData>>,
+    /// Acesso (fraco) ao `TabManager` p/ achar a aba que disparou o callback. Só borrow imutável.
+    manager: Weak<RefCell<Option<TabManager>>>,
+    /// Sinaliza ao loop que o chrome (props da aba ativa) precisa ser re-sincronizado.
+    chrome_dirty: Rc<Cell<bool>>,
 }
 
 impl Embedder {
-    /// Reflete `can_go_back`/`can_go_forward` da `WebView` nas propriedades do chrome.
-    fn sync_history(&self, webview: &WebView) {
-        if let Some(app) = self.app.upgrade() {
-            app.set_can_go_back(webview.can_go_back());
-            app.set_can_go_forward(webview.can_go_forward());
-        }
+    /// Acha o [`TabState`] da aba cujo id é `id` (borrow imutável do manager; clona o `Rc`). `None` se
+    /// o manager ainda não subiu ou a aba já foi fechada.
+    fn state_for(&self, id: WebViewId) -> Option<Rc<TabState>> {
+        let cell = self.manager.upgrade()?;
+        let guard = cell.borrow();
+        let manager = guard.as_ref()?;
+        manager
+            .tabs
+            .iter()
+            .find(|tab| tab.webview.id() == id)
+            .map(|tab| Rc::clone(&tab.state))
     }
 }
 
 impl WebViewDelegate for Embedder {
-    fn notify_new_frame_ready(&self, _webview: WebView) {
-        self.dirty.set(true);
+    fn notify_new_frame_ready(&self, webview: WebView) {
+        // Marca a aba que produziu o frame. O loop só bombeia a ATIVA — frames de abas de fundo ficam
+        // marcados e são pintados quando a aba vira ativa (set_active força um pump).
+        if let Some(state) = self.state_for(webview.id()) {
+            state.dirty.set(true);
+        }
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
-        if let Some(app) = self.app.upgrade() {
-            app.set_loading(status != LoadStatus::Complete);
+        if let Some(state) = self.state_for(webview.id()) {
+            state.loading.set(status != LoadStatus::Complete);
+            state.can_go_back.set(webview.can_go_back());
+            state.can_go_forward.set(webview.can_go_forward());
         }
-        self.sync_history(&webview);
+        self.chrome_dirty.set(true);
     }
 
     fn notify_url_changed(&self, webview: WebView, url: Url) {
-        if let Some(app) = self.app.upgrade() {
-            app.set_page_url(url.to_string().into());
+        if let Some(state) = self.state_for(webview.id()) {
+            *state.url.borrow_mut() = url.to_string();
+            state.can_go_back.set(webview.can_go_back());
+            state.can_go_forward.set(webview.can_go_forward());
         }
-        // M4: registra a visita no histórico (persistido). O título pode ainda não ter chegado nesta
-        // fase do load (vem depois via `notify_page_title_changed`); gravamos o que se sabe — o dedup
-        // consecutivo de `record_visit` atualiza a entrada se a mesma URL reaparecer com título.
+        // M4: registra a visita no histórico (persistido). O título pode não ter chegado ainda (vem
+        // depois via `notify_page_title_changed`); o dedup consecutivo de `record_visit` atualiza a
+        // entrada quando a mesma URL reaparecer com título.
         let title = webview.page_title().unwrap_or_default();
         self.data.borrow_mut().record_visit(url.as_str(), &title);
-        self.sync_history(&webview);
+        self.chrome_dirty.set(true);
     }
 
     fn notify_history_changed(&self, webview: WebView, _entries: Vec<Url>, _current: usize) {
-        self.sync_history(&webview);
+        if let Some(state) = self.state_for(webview.id()) {
+            state.can_go_back.set(webview.can_go_back());
+            state.can_go_forward.set(webview.can_go_forward());
+        }
+        self.chrome_dirty.set(true);
     }
 
-    fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
-        if let Some(app) = self.app.upgrade() {
-            let title = title.unwrap_or_default();
-            let shown = if title.is_empty() {
-                "BasedBrowser".to_string()
-            } else {
-                format!("{title} — BasedBrowser")
-            };
-            app.set_window_title(shown.into());
+    fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
+        if let Some(state) = self.state_for(webview.id()) {
+            *state.title.borrow_mut() = title.unwrap_or_default();
         }
+        self.chrome_dirty.set(true);
     }
 }
 
@@ -210,17 +228,43 @@ struct WgpuCtx {
     device: wgpu::Device,
 }
 
-/// Estado vivo do motor. O `parent` (`WindowRenderingContext`) é mantido vivo porque o
-/// `OffscreenRenderingContext` empresta o contexto GL dele — e, no M3, é dele que vem o
-/// `get_proc_address` do surfman p/ carregar as entry-points GL `*EXT`.
-struct Runtime {
+/// Estado observável POR-ABA (M4, ADR-0007): escrito pelo `Embedder` (roteado por id) durante o
+/// `spin_event_loop` e lido pelo loop p/ refletir no chrome quando a aba é a ATIVA. Tudo
+/// interior-mutável p/ o delegate atualizar sem `borrow_mut` do `TabManager` — preserva o invariante
+/// anti-reentrância do M2/M3.
+#[derive(Default)]
+struct TabState {
+    /// Há frame novo desta aba (lido pelo loop só p/ a aba ativa — abas de fundo não são pintadas).
+    dirty: Cell<bool>,
+    url: RefCell<String>,
+    title: RefCell<String>,
+    loading: Cell<bool>,
+    can_go_back: Cell<bool>,
+    can_go_forward: Cell<bool>,
+}
+
+/// Uma aba: a `WebView` do Servo + seu `OffscreenRenderingContext` (FBO PRÓPRIO, derivado do mesmo
+/// `WindowRenderingContext` pai) + o estado observável. Cada aba retém o último frame no próprio FBO →
+/// trocar de aba é instantâneo (a ponte GPU só muda a ORIGEM do blit).
+struct Tab {
     webview: WebView,
-    servo: Servo,
     context: Rc<OffscreenRenderingContext>,
+    state: Rc<TabState>,
+}
+
+/// Motor multi-aba (M4, ADR-0007): UM `Servo`, N `Tab`s, índice da ativa. O `parent` é o único
+/// `WindowRenderingContext` (deriva o offscreen de cada aba — todas compartilham o contexto GL do
+/// surfman — e provê o `get_proc_address` das entry-points `*EXT`). A ponte GPU (`bridge`) é ÚNICA e
+/// compartilhada: só a aba ATIVA é pintada e blitada (trocar de aba = trocar o FBO de origem do blit).
+/// Abas de fundo ficam `set_throttled(true)` e NÃO entram no `pump`.
+struct TabManager {
+    tabs: Vec<Tab>,
+    active: usize,
+    servo: Servo,
     parent: Rc<WindowRenderingContext>,
     /// Device wgpu do Slint (compartilhado com o `set_rendering_notifier`); `None` até ser capturado.
     wgpu: Rc<RefCell<Option<WgpuCtx>>>,
-    /// Textura GPU compartilhada (M3). `None` até ser criada sob demanda (quando `wgpu` estiver pronto).
+    /// Textura GPU compartilhada (M3), única p/ todas as abas. `None` até ser criada sob demanda.
     bridge: RefCell<Option<gpu_bridge::SharedFrameTexture>>,
     /// Entry-points GL `*EXT` já carregadas (uma vez).
     gl_loaded: Cell<bool>,
@@ -231,15 +275,79 @@ struct Runtime {
     pending: Arc<AtomicBool>,
 }
 
-/// Cria o `Servo` + `WebView` renderizando num `OffscreenRenderingContext` (FBO de GL de hardware)
-/// derivado da janela do Slint. `show()` + `focus()` são necessários: sem `show()` a pipeline fica
-/// "fechada" e renderiza em branco.
-fn init_runtime(
+impl TabManager {
+    /// A aba ativa (sempre válida por construção; `None` só num estado degenerado sem abas).
+    fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.get(self.active)
+    }
+
+    /// Abre uma aba nova carregando `url`, com seu próprio `OffscreenRenderingContext` do tamanho
+    /// `web_size`, ligando o delegate `sink`. Se `activate`, torna-a a ativa (show+focus, throttle das
+    /// outras). Devolve o índice da nova aba. Criar o offscreen faz chamadas GL → garante o contexto
+    /// pai corrente antes (território do L-004 ao abrir abas em runtime).
+    fn open_tab(
+        &mut self,
+        web_size: dpi::PhysicalSize<u32>,
+        scale: f32,
+        url: Url,
+        sink: &Rc<Embedder>,
+        activate: bool,
+    ) -> usize {
+        if let Err(e) = self.parent.make_current() {
+            eprintln!("[m4] make_current antes de abrir aba falhou: {e:?}");
+        }
+        let web_physical = dpi::PhysicalSize::new(web_size.width.max(1), web_size.height.max(1));
+        let context = Rc::new(self.parent.offscreen_context(web_physical));
+        let url_string = url.to_string();
+        let webview = WebViewBuilder::new(&self.servo, context.clone())
+            .url(url)
+            .hidpi_scale_factor(Scale::new(scale))
+            .delegate(sink.clone())
+            .build();
+        let state = Rc::new(TabState::default());
+        *state.url.borrow_mut() = url_string;
+        let index = self.tabs.len();
+        self.tabs.push(Tab {
+            webview,
+            context,
+            state,
+        });
+        if activate {
+            self.set_active(index);
+        }
+        index
+    }
+
+    /// Torna a aba `index` a ativa: mostra/foca ela e esconde/throttla as demais (economia de CPU/GPU
+    /// nas abas de fundo). Marca a nova ativa como suja p/ forçar um pump. No-op se `index` fora de faixa.
+    /// `show()`+`focus()` são obrigatórios na ativa (sem `show()` a pipeline fica em branco — L-004).
+    fn set_active(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.active = index;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if i == index {
+                tab.webview.set_throttled(false);
+                tab.webview.show();
+                tab.webview.focus();
+                tab.state.dirty.set(true);
+            } else {
+                tab.webview.hide();
+                tab.webview.set_throttled(true);
+            }
+        }
+    }
+}
+
+/// Cria o `Servo` + a PRIMEIRA aba (uma `WebView` com seu `OffscreenRenderingContext`, derivado de um
+/// único `WindowRenderingContext` pai = a superfície GL da janela do Slint). Ver [`TabManager`].
+fn init_manager(
     window: &slint::Window,
-    sink: Rc<Embedder>,
+    sink: &Rc<Embedder>,
     web_size: dpi::PhysicalSize<u32>,
     wgpu: Rc<RefCell<Option<WgpuCtx>>>,
-) -> Result<Runtime, String> {
+) -> Result<TabManager, String> {
     let provider = window.window_handle();
     let display_handle = provider
         .display_handle()
@@ -248,18 +356,15 @@ fn init_runtime(
         .window_handle()
         .map_err(|e| format!("window_handle: {e}"))?;
 
-    // O contexto PAI cobre a janela inteira (é a superfície GL da janela); o offscreen do Servo é
-    // dimensionado pela ÁREA WEB (exclui a toolbar), o que torna o mapeamento de coordenadas
-    // identidade (ver doc do módulo). O resize dinâmico só mexe no offscreen (ver `wire_chrome`).
+    // O contexto PAI cobre a janela inteira (superfície GL da janela); cada aba deriva dele um offscreen
+    // dimensionado pela ÁREA WEB (exclui a toolbar), o que torna o mapeamento de coordenadas identidade.
     let size = window.size();
     let window_physical = dpi::PhysicalSize::new(size.width.max(1), size.height.max(1));
-    let web_physical = dpi::PhysicalSize::new(web_size.width.max(1), web_size.height.max(1));
 
     let parent = Rc::new(
         WindowRenderingContext::new(display_handle, window_handle, window_physical)
             .map_err(|e| format!("WindowRenderingContext::new: {e:?}"))?,
     );
-    let context = Rc::new(parent.offscreen_context(web_physical));
 
     // Waker real (T6): começa `true` p/ o 1º tick pós-init já spinar e carregar a página.
     let pending = Arc::new(AtomicBool::new(true));
@@ -270,25 +375,25 @@ fn init_runtime(
         .build();
     servo.setup_logging();
 
-    let webview = WebViewBuilder::new(&servo, context.clone())
-        .url(home_page_url()?)
-        .hidpi_scale_factor(Scale::new(window.scale_factor()))
-        .delegate(sink)
-        .build();
-    webview.focus();
-    webview.show();
-
-    Ok(Runtime {
-        webview,
+    let mut manager = TabManager {
+        tabs: Vec::new(),
+        active: 0,
         servo,
-        context,
         parent,
         wgpu,
         bridge: RefCell::new(None),
         gl_loaded: Cell::new(false),
         gpu_disabled: Cell::new(false),
         pending,
-    })
+    };
+    manager.open_tab(
+        web_size,
+        window.scale_factor(),
+        home_page_url()?,
+        sink,
+        true,
+    );
+    Ok(manager)
 }
 
 /// Converte um comprimento físico (`f32`, vindo do Slint como `physical-length`) para pixels,
@@ -372,22 +477,25 @@ fn placeholder_frame(width: u32, height: u32) -> Image {
 /// o caminho GPU zero-copy (blit do FBO offscreen para a textura compartilhada, daí um `slint::Image`
 /// que a referencia); se o interop não estiver disponível, cai no fallback de **cópia-CPU** (M1/M2,
 /// via `read_to_image`). `BASEDBROWSER_DUMP_FRAME=<path>` salva o frame em PNG (evidência, uma vez).
-fn pump_frame(runtime: &Runtime, weak: &slint::Weak<MainWindow>, logged: &Cell<bool>) {
-    runtime.webview.paint();
-    if runtime.context.make_current().is_err() {
+fn pump_frame(manager: &TabManager, weak: &slint::Weak<MainWindow>, logged: &Cell<bool>) {
+    let Some(tab) = manager.active_tab() else {
+        return;
+    };
+    tab.webview.paint();
+    if tab.context.make_current().is_err() {
         return;
     }
-    let handled = !runtime.gpu_disabled.get() && pump_frame_gpu(runtime, weak);
+    let handled = !manager.gpu_disabled.get() && pump_frame_gpu(manager, tab, weak);
     if !handled {
-        pump_frame_cpu(runtime, weak);
+        pump_frame_cpu(tab, weak);
     }
     // Evidência (opt-in por env): dump a cada frame sobrescrevendo — o arquivo final é um frame já
     // renderizado (a 1ª rajada de frames de uma página pode estar em branco antes de pintar). Loga só
     // uma vez. Fora do caminho quente normal (só roda quando `BASEDBROWSER_DUMP_FRAME` está setado).
     if let Ok(path) = std::env::var("BASEDBROWSER_DUMP_FRAME") {
         let first = !logged.replace(true);
-        dump_source(runtime, &path, first);
-        if let Some(bridge) = runtime.bridge.borrow().as_ref() {
+        dump_source(tab, &path, first);
+        if let Some(bridge) = manager.bridge.borrow().as_ref() {
             bridge.dump_shared(&path, first);
         }
     }
@@ -397,27 +505,28 @@ fn pump_frame(runtime: &Runtime, weak: &slint::Weak<MainWindow>, logged: &Cell<b
 /// Faz o blit do FBO offscreen do Servo para a textura compartilhada (flip + sync dentro de
 /// `blit_from`) e entrega um `slint::Image` que a referencia. Devolve `true` se entregou o frame;
 /// `false` p/ cair no fallback CPU. Falha ao criar a ponte desabilita o GPU para a sessão (loga uma vez).
-fn pump_frame_gpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) -> bool {
-    let size = runtime.context.size2d();
-    // (Re)cria a ponte se ainda não existe ou se o offscreen mudou de tamanho (resize). O contexto do
-    // Servo já está corrente (`pump_frame` chamou `make_current`), então é seguro mexer no GL aqui.
-    let needs_new = match runtime.bridge.borrow().as_ref() {
+fn pump_frame_gpu(manager: &TabManager, tab: &Tab, weak: &slint::Weak<MainWindow>) -> bool {
+    let size = tab.context.size2d();
+    // (Re)cria a ponte se ainda não existe ou se o offscreen da ABA ATIVA mudou de tamanho (resize). O
+    // contexto do Servo já está corrente (`pump_frame` chamou `make_current`), então é seguro mexer no
+    // GL aqui. A ponte é ÚNICA p/ todas as abas (mesmo tamanho = área web) — trocar de aba não a recria.
+    let needs_new = match manager.bridge.borrow().as_ref() {
         None => true,
         Some(bridge) => bridge.size() != (size.width, size.height),
     };
     if needs_new {
         // Precisa do device wgpu já capturado pelo `set_rendering_notifier`.
-        let captured = runtime.wgpu.borrow().clone();
+        let captured = manager.wgpu.borrow().clone();
         let Some(ctx) = captured else {
             return false; // ainda não capturado; usa CPU neste frame
         };
-        if !runtime.gl_loaded.replace(true) {
+        if !manager.gl_loaded.replace(true) {
             // Carrega as entry-points GL `*EXT` via o `get_proc_address` do surfman do Servo.
-            let (device, context) = runtime.parent.surfman_details();
+            let (device, context) = manager.parent.surfman_details();
             gpu_bridge::load_gl_with(|symbol| device.get_proc_address(&context, symbol));
         }
         // Libera a ponte antiga (tamanho velho) antes de criar a nova.
-        if let Some(old) = runtime.bridge.borrow_mut().take() {
+        if let Some(old) = manager.bridge.borrow_mut().take() {
             old.destroy();
         }
         match gpu_bridge::SharedFrameTexture::new(
@@ -431,22 +540,22 @@ fn pump_frame_gpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) -> bool {
                     "[m3] textura GPU compartilhada criada ({}x{}) — zero-copy ativo",
                     size.width, size.height
                 );
-                *runtime.bridge.borrow_mut() = Some(bridge);
+                *manager.bridge.borrow_mut() = Some(bridge);
             }
             Err(e) => {
                 eprintln!("[m3] interop GPU indisponível, fallback p/ cópia-CPU: {e}");
-                runtime.gpu_disabled.set(true);
+                manager.gpu_disabled.set(true);
                 return false;
             }
         }
     }
 
-    let bridge_ref = runtime.bridge.borrow();
+    let bridge_ref = manager.bridge.borrow();
     let Some(bridge) = bridge_ref.as_ref() else {
         return false;
     };
-    // Origem do blit = FBO do offscreen do Servo. `prepare_for_rendering` o liga; lemos o binding.
-    runtime.context.prepare_for_rendering();
+    // Origem do blit = FBO do offscreen da ABA ATIVA. `prepare_for_rendering` o liga; lemos o binding.
+    tab.context.prepare_for_rendering();
     let src_fbo = gpu_bridge::bound_framebuffer();
     bridge.blit_from(src_fbo);
     match bridge.slint_image() {
@@ -465,9 +574,9 @@ fn pump_frame_gpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) -> bool {
 
 /// Fallback de cópia-CPU (M1/M2): `read_to_image` (readback GL) → `SharedPixelBuffer` →
 /// `Image::from_rgba8`. Usado até o device wgpu ser capturado, ou se o interop GPU falhar.
-fn pump_frame_cpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) {
-    let rect = DeviceIntRect::from_size(runtime.context.size2d().to_i32());
-    let Some(frame) = runtime.context.read_to_image(rect) else {
+fn pump_frame_cpu(tab: &Tab, weak: &slint::Weak<MainWindow>) {
+    let rect = DeviceIntRect::from_size(tab.context.size2d().to_i32());
+    let Some(frame) = tab.context.read_to_image(rect) else {
         return;
     };
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(frame.width(), frame.height());
@@ -477,12 +586,12 @@ fn pump_frame_cpu(runtime: &Runtime, weak: &slint::Weak<MainWindow>) {
     }
 }
 
-/// Salva o frame da FONTE (FBO offscreen do Servo, via `read_to_image`) em `path`, sobrescrevendo.
+/// Salva o frame da FONTE (FBO offscreen da aba ativa, via `read_to_image`) em `path`, sobrescrevendo.
 /// Evidência/depuração — comparável ao dump da textura GPU compartilhada (`.gpu.png`). `log` controla
 /// se emite o eprintln (uma vez). Fora do caminho quente (só quando `BASEDBROWSER_DUMP_FRAME` setado).
-fn dump_source(runtime: &Runtime, path: &str, log: bool) {
-    let rect = DeviceIntRect::from_size(runtime.context.size2d().to_i32());
-    let Some(frame) = runtime.context.read_to_image(rect) else {
+fn dump_source(tab: &Tab, path: &str, log: bool) {
+    let rect = DeviceIntRect::from_size(tab.context.size2d().to_i32());
+    let Some(frame) = tab.context.read_to_image(rect) else {
         return;
     };
     match frame.save(path) {
@@ -499,55 +608,62 @@ fn dump_source(runtime: &Runtime, path: &str, log: bool) {
     }
 }
 
-/// Registra os callbacks do chrome (Slint) que encaminham input e navegação à `WebView`. Cada
-/// handler captura um clone do runtime compartilhado; se o evento chegar antes do init lazy, o
-/// `if let Some` ignora com segurança. Borrows são curtos e os callbacks do Slint rodam
-/// serializados com o `Timer` na main thread (sem reentrância no `RefCell`).
+/// Executa `f` com a `WebView` da ABA ATIVA, se o manager já subiu, e marca o waker (resposta imediata
+/// à ação do usuário). Borrow IMUTÁVEL e curto; os callbacks do Slint rodam fora do `spin_event_loop`,
+/// então nem competem com o borrow do loop. No-op se o manager ainda não existe / não há aba.
+fn with_active_webview(manager: &Rc<RefCell<Option<TabManager>>>, f: impl FnOnce(&WebView)) {
+    if let Some(m) = manager.borrow().as_ref() {
+        if let Some(tab) = m.active_tab() {
+            f(&tab.webview);
+        }
+        wake(m);
+    }
+}
+
+/// Registra os callbacks do chrome (Slint) que encaminham input e navegação à ABA ATIVA. Cada handler
+/// captura um clone do `manager` compartilhado; se o evento chegar antes do init lazy, é ignorado com
+/// segurança. Input/navegação sempre vão para a aba ativa (M4).
 fn wire_chrome(
     app: &MainWindow,
-    runtime: &Rc<RefCell<Option<Runtime>>>,
+    manager: &Rc<RefCell<Option<TabManager>>>,
     web_size: &Rc<Cell<dpi::PhysicalSize<u32>>>,
 ) {
-    // Resize: o `.slint` dispara `web-resized` com o tamanho FÍSICO da área web quando o layout
-    // muda. Guardamos para o init lazy e, se o runtime já existe, redimensionamos só o contexto
-    // OFFSCREEN via `webview.resize` (recria o FBO + reflui o viewport; ver painter.rs). NÃO
-    // tocamos o `WindowRenderingContext` pai — resize concorrente das duas superfícies GL é o que
-    // corrompia o estado compartilhado no M1 (L-004 / ADR-0003).
-    let rt = runtime.clone();
+    // Resize: o `.slint` dispara `web-resized` com o tamanho FÍSICO da área web quando o layout muda.
+    // Guardamos para o init lazy e, se o manager já existe, redimensionamos o offscreen de CADA aba
+    // (cada uma tem seu FBO) via `webview.resize` — assim, ao trocar p/ uma aba de fundo após o
+    // resize, ela já está no tamanho certo. NÃO tocamos o `WindowRenderingContext` pai (L-004). A
+    // ponte GPU é recriada no novo tamanho por `pump_frame_gpu`.
+    let mgr = manager.clone();
     let ws = web_size.clone();
     app.on_web_resized(move |w, h| {
         let size = dpi::PhysicalSize::new(physical_px(w), physical_px(h));
         ws.set(size);
-        if let Some(r) = rt.borrow().as_ref() {
-            r.webview.resize(size);
-            // M3 (ADR-0005): a ponte GPU é dimensionada ao offscreen; `pump_frame_gpu` detecta a
-            // mudança de tamanho e a recria (com o contexto do Servo corrente — ver lá).
-            wake_servo(r);
+        if let Some(m) = mgr.borrow().as_ref() {
+            for tab in &m.tabs {
+                tab.webview.resize(size);
+            }
+            wake(m);
         }
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_forward_pointer(move |x, y, kind, button| {
-        if let Some(r) = rt.borrow().as_ref() {
-            r.webview
-                .notify_input_event(input::pointer_input_event(x, y, kind, button));
-            wake_servo(r);
-        }
+        with_active_webview(&mgr, |wv| {
+            wv.notify_input_event(input::pointer_input_event(x, y, kind, button));
+        });
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_forward_scroll(move |x, y, dx, dy| {
-        if let Some(r) = rt.borrow().as_ref() {
-            r.webview
-                .notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
-            wake_servo(r);
-        }
+        with_active_webview(&mgr, |wv| {
+            wv.notify_scroll_event(input::scroll_delta(dx, dy), input::device_point(x, y));
+        });
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_forward_key(move |text, pressed, ctrl, shift, alt, meta, repeat| {
-        if let Some(r) = rt.borrow().as_ref() {
-            r.webview.notify_input_event(input::key_input_event(
+        with_active_webview(&mgr, |wv| {
+            wv.notify_input_event(input::key_input_event(
                 text.as_str(),
                 pressed,
                 ctrl,
@@ -556,54 +672,63 @@ fn wire_chrome(
                 meta,
                 repeat,
             ));
-            wake_servo(r);
-        }
+        });
     });
 
-    let rt = runtime.clone();
-    app.on_load_url(move |text| {
-        if let Some(r) = rt.borrow().as_ref() {
-            match parse_user_url(text.as_str()) {
-                Some(url) => r.webview.load(url),
-                None => eprintln!("[m2] URL invalida ignorada: {text:?}"),
-            }
-            wake_servo(r);
-        }
+    let mgr = manager.clone();
+    app.on_load_url(move |text| match parse_user_url(text.as_str()) {
+        Some(url) => with_active_webview(&mgr, |wv| wv.load(url.clone())),
+        None => eprintln!("[m2] URL invalida ignorada: {text:?}"),
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_go_back(move || {
-        if let Some(r) = rt.borrow().as_ref() {
-            if r.webview.can_go_back() {
-                r.webview.go_back(1);
+        with_active_webview(&mgr, |wv| {
+            if wv.can_go_back() {
+                wv.go_back(1);
             }
-            wake_servo(r);
-        }
+        });
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_go_forward(move || {
-        if let Some(r) = rt.borrow().as_ref() {
-            if r.webview.can_go_forward() {
-                r.webview.go_forward(1);
+        with_active_webview(&mgr, |wv| {
+            if wv.can_go_forward() {
+                wv.go_forward(1);
             }
-            wake_servo(r);
-        }
+        });
     });
 
-    let rt = runtime.clone();
+    let mgr = manager.clone();
     app.on_reload(move || {
-        if let Some(r) = rt.borrow().as_ref() {
-            r.webview.reload();
-            wake_servo(r);
-        }
+        with_active_webview(&mgr, WebView::reload);
     });
+}
+
+/// Reflete o estado da ABA ATIVA nas propriedades do chrome (Slint). Chamado pelo loop quando o
+/// `Embedder` marcou `chrome_dirty` — centraliza as escritas de UI no loop (fora do `spin_event_loop`).
+fn sync_chrome(app: &MainWindow, manager: &TabManager) {
+    let Some(tab) = manager.active_tab() else {
+        return;
+    };
+    let state = &tab.state;
+    app.set_page_url(state.url.borrow().as_str().into());
+    app.set_loading(state.loading.get());
+    app.set_can_go_back(state.can_go_back.get());
+    app.set_can_go_forward(state.can_go_forward.get());
+    let title = state.title.borrow();
+    let shown = if title.is_empty() {
+        "BasedBrowser".to_string()
+    } else {
+        format!("{title} — BasedBrowser")
+    };
+    app.set_window_title(shown.into());
 }
 
 /// Marca o `pending` do waker (T6): força o loop a spinar no próximo tick (60 Hz), p/ a ação do
 /// usuário (input/navegação/resize) ser processada imediatamente mesmo se o loop estava ocioso.
-fn wake_servo(runtime: &Runtime) {
-    runtime.pending.store(true, Ordering::Release);
+fn wake(manager: &TabManager) {
+    manager.pending.store(true, Ordering::Release);
 }
 
 /// Telemetria do hot path de frame, habilitada por `BASEDBROWSER_BENCH=1` (no-op quando ausente).
@@ -703,6 +828,38 @@ fn capture_wgpu_device(app: &MainWindow) -> Rc<RefCell<Option<WgpuCtx>>> {
     cell
 }
 
+/// Monta o `TabManager` de forma LAZY (alguns ticks após o loop subir, FORA do setup do renderer do
+/// Slint — ver L-004) quando ainda não existe. Devolve `true` enquanto ainda está inicializando (o
+/// chamador deve retornar do tick). Espera `INIT_DELAY_TICKS` p/ o renderer do Slint estabilizar.
+fn lazy_init_manager(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    sink: &Rc<Embedder>,
+    weak: &slint::Weak<MainWindow>,
+    web_size: dpi::PhysicalSize<u32>,
+    wgpu: &Rc<RefCell<Option<WgpuCtx>>>,
+    init_ticks: &Cell<u32>,
+) -> bool {
+    if manager.borrow().is_some() {
+        return false;
+    }
+    let n = init_ticks.get();
+    init_ticks.set(n + 1);
+    if n < INIT_DELAY_TICKS {
+        return true;
+    }
+    let Some(app) = weak.upgrade() else {
+        return true;
+    };
+    match init_manager(app.window(), sink, web_size, wgpu.clone()) {
+        Ok(m) => {
+            eprintln!("[m4] motor multi-aba iniciado (1 aba; offscreen GL sobre a janela)");
+            *manager.borrow_mut() = Some(m);
+        }
+        Err(e) => eprintln!("[m1] FALHA ao iniciar o runtime do Servo: {e}"),
+    }
+    true
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Provedor de cripto process-wide p/ TLS. `install_default` falha se já houver um — ignorável.
     if rustls::crypto::aws_lc_rs::default_provider()
@@ -736,83 +893,86 @@ fn main() -> Result<(), slint::PlatformError> {
     let app_data = load_persisted_state();
 
     let weak = app.as_weak();
-    let runtime: Rc<RefCell<Option<Runtime>>> = Rc::new(RefCell::new(None));
+    let manager: Rc<RefCell<Option<TabManager>>> = Rc::new(RefCell::new(None));
     // Clone p/ salvar a sessão ao sair (o original é movido para o closure do timer).
-    let exit_runtime = runtime.clone();
+    let exit_manager = manager.clone();
+    // M4: o `Embedder` segura um `Weak` do manager (sem ciclo Rc) p/ rotear callbacks por id, e um
+    // `chrome_dirty` compartilhado com o loop (que re-sincroniza a aba ativa → props do Slint).
+    let chrome_dirty = Rc::new(Cell::new(true));
     let sink = Rc::new(Embedder {
-        dirty: Cell::new(false),
-        app: app.as_weak(),
         data: app_data.clone(),
+        manager: Rc::downgrade(&manager),
+        chrome_dirty: chrome_dirty.clone(),
     });
     let logged = Rc::new(Cell::new(false));
     // Tamanho físico da área web. Fallback inicial; o `changed width/height` do `.slint` corrige
     // para o valor real durante o layout (antes do init lazy do Servo).
     let web_size = Rc::new(Cell::new(dpi::PhysicalSize::new(1024_u32, 744_u32)));
 
-    wire_chrome(&app, &runtime, &web_size);
+    wire_chrome(&app, &manager, &web_size);
 
-    // Dirige o Servo e bombeia frames. O runtime é montado LAZY aqui (e não no
+    // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
     // Slint, evitando a colisão de `make_current` que corrompia o GL (ver doc do módulo).
     let timer = Timer::default();
-    let tick_runtime = runtime;
+    let tick_manager = manager;
     let tick_sink = sink;
     let tick_weak = weak;
     let tick_logged = logged;
     let tick_web_size = web_size;
     let tick_wgpu = wgpu_ctx;
+    let tick_chrome_dirty = chrome_dirty;
     let init_ticks = Cell::new(0u32);
     let idle_ticks = Cell::new(0u32);
     let tick_bench = RefCell::new(FrameBench::new());
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
-        if tick_runtime.borrow().is_none() {
-            let n = init_ticks.get();
-            init_ticks.set(n + 1);
-            if n < INIT_DELAY_TICKS {
-                return;
-            }
-            let Some(app) = tick_weak.upgrade() else {
-                return;
-            };
-            match init_runtime(
-                app.window(),
-                tick_sink.clone(),
-                tick_web_size.get(),
-                tick_wgpu.clone(),
-            ) {
-                Ok(rt) => {
-                    eprintln!(
-                        "[m1] runtime do Servo iniciado (offscreen GL sobre a janela do Slint)"
-                    );
-                    *tick_runtime.borrow_mut() = Some(rt);
-                }
-                Err(e) => eprintln!("[m1] FALHA ao iniciar o runtime do Servo: {e}"),
-            }
+        if lazy_init_manager(
+            &tick_manager,
+            &tick_sink,
+            &tick_weak,
+            tick_web_size.get(),
+            &tick_wgpu,
+            &init_ticks,
+        ) {
             return;
         }
 
-        let guard = tick_runtime.borrow();
-        let Some(rt) = guard.as_ref() else {
+        let guard = tick_manager.borrow();
+        let Some(manager) = guard.as_ref() else {
             return;
         };
         // Waker real (T6): spina a ~60 Hz enquanto há atividade; após `IDLE_ACTIVE_TICKS` ocioso,
         // cai p/ ~10 Hz (spina 1 a cada `IDLE_SPIN_EVERY`), economizando o `spin_event_loop` ocioso.
         // O `wake()` do Servo e os handlers de input marcam `pending` → volta a 60 Hz no próximo tick.
-        let woken = rt.pending.swap(false, Ordering::AcqRel);
+        let woken = manager.pending.swap(false, Ordering::AcqRel);
         let idle = idle_ticks.get();
         if !woken && idle >= IDLE_ACTIVE_TICKS && !idle.is_multiple_of(IDLE_SPIN_EVERY) {
             idle_ticks.set(idle.saturating_add(1));
             return;
         }
-        if rt.context.make_current().is_err() {
+        // Torna corrente o contexto da aba ativa (= o pai; todas as abas o compartilham) antes do spin.
+        if manager
+            .active_tab()
+            .is_none_or(|tab| tab.context.make_current().is_err())
+        {
             return;
         }
-        rt.servo.spin_event_loop();
-        let produced = tick_sink.dirty.replace(false);
+        manager.servo.spin_event_loop();
+        // Só a ABA ATIVA é bombeada — frames de abas de fundo ficam marcados e são pintados ao virarem
+        // ativas (set_active força um pump). Abas de fundo throttled também produzem menos.
+        let produced = manager
+            .active_tab()
+            .is_some_and(|tab| tab.state.dirty.replace(false));
         if produced {
             let started = Instant::now();
-            pump_frame(rt, &tick_weak, &tick_logged);
+            pump_frame(manager, &tick_weak, &tick_logged);
             tick_bench.borrow_mut().record(started.elapsed());
+        }
+        // M4: re-sincroniza o chrome (props da aba ativa) se o `Embedder` marcou algo mudado.
+        if tick_chrome_dirty.replace(false) {
+            if let Some(app) = tick_weak.upgrade() {
+                sync_chrome(&app, manager);
+            }
         }
         idle_ticks.set(if woken || produced {
             0
@@ -827,9 +987,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let _exit_timer = install_exit_timer();
 
     let result = app.run();
-    // M4: ao sair, persiste a sessão (URL da aba atual). T2 ainda é 1 aba; T7 generaliza p/ N abas +
-    // restauração no start. O histórico já é gravado a cada visita.
-    save_session_on_exit(&exit_runtime);
+    // M4: ao sair, persiste a sessão (URLs das abas + índice da ativa). A restauração no start chega
+    // na T7. O histórico já é gravado a cada visita.
+    save_session_on_exit(&exit_manager);
     result
 }
 
@@ -870,16 +1030,19 @@ fn load_persisted_state() -> Rc<RefCell<persist::AppData>> {
     data
 }
 
-/// Salva a sessão de abas ao encerrar. T2: 1 aba (a URL atual da `WebView`); T7 passa a N abas + aba
-/// ativa. No-op se o runtime nunca subiu ou a aba não tem URL.
-fn save_session_on_exit(runtime: &Rc<RefCell<Option<Runtime>>>) {
-    if let Some(rt) = runtime.borrow().as_ref() {
-        if let Some(url) = rt.webview.url() {
-            persist::save_session(&persist::Session {
-                tabs: vec![url.to_string()],
-                active: 0,
-            });
-            eprintln!("[m4] sessão salva (1 aba)");
+/// Salva a sessão de abas ao encerrar: as URLs de todas as abas + o índice da ativa. No-op se o
+/// manager nunca subiu ou nenhuma aba tem URL. A restauração no start chega na T7.
+fn save_session_on_exit(manager: &Rc<RefCell<Option<TabManager>>>) {
+    if let Some(m) = manager.borrow().as_ref() {
+        let tabs: Vec<String> = m
+            .tabs
+            .iter()
+            .filter_map(|tab| tab.webview.url().map(|url| url.to_string()))
+            .collect();
+        if !tabs.is_empty() {
+            let active = m.active.min(tabs.len() - 1);
+            persist::save_session(&persist::Session { tabs, active });
+            eprintln!("[m4] sessão salva ({} aba(s))", m.tabs.len());
         }
     }
 }
