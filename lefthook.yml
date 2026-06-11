@@ -12,3 +12,8 @@ pre-commit:
       # servo-poc (PoC descartável, verificada manual/CI); basedbrowser (produto) CONTINUA coberto.
       # Ver docs/adr/0002+0003 + HARNESS-ROADMAP H1.
       run: cargo clippy --workspace --exclude servo-poc --all-targets -- -D warnings
+    archgate:
+      # [M8] Archgate (HARNESS-ROADMAP H3): acopla ADRs/config protegida a checks executáveis
+      # (pin do Servo / toolchain = ADR-0002; status dos ADRs). Erro-como-instrução; rápido (segundos),
+      # sem build. O MESMO check roda no CI (.github/workflows/ci.yml). Ver ADR-0011.
+      run: scripts/checks/archgate.sh
