@@ -499,6 +499,9 @@ struct TabState {
     loading: Cell<bool>,
     can_go_back: Cell<bool>,
     can_go_forward: Cell<bool>,
+    /// M9: zoom de página (1.0 = 100%); espelha `WebView::page_zoom`. Inicializado em `open_tab`
+    /// (o `Default` daria 0.0). Mostrado no menu ⋯ e ajustado por Ctrl +/−/0.
+    page_zoom: Cell<f32>,
 }
 
 /// Uma aba: a `WebView` do Servo + seu `OffscreenRenderingContext` (FBO PRÓPRIO, derivado do mesmo
@@ -563,6 +566,7 @@ impl TabManager {
             .delegate(sink.clone())
             .build();
         let state = Rc::new(TabState::default());
+        state.page_zoom.set(1.0); // M9: 100% (o Default de Cell<f32> seria 0.0).
         *state.url.borrow_mut() = url_string;
         let index = self.tabs.len();
         self.tabs.push(Tab {
@@ -990,6 +994,42 @@ fn with_active_webview(manager: &Rc<RefCell<Option<TabManager>>>, f: impl FnOnce
     }
 }
 
+/// M9: limites e passo do zoom de página (aditivo, 10% por clique → percentuais limpos).
+const ZOOM_STEP: f32 = 0.1;
+const ZOOM_MIN: f32 = 0.3;
+const ZOOM_MAX: f32 = 5.0;
+
+/// M9: fator de zoom (f32) → percentual inteiro p/ exibição. O zoom é fixado em [0.3, 5.0]
+/// (`apply_zoom`), então o percentual cabe em [30, 500] — sem truncação real no cast.
+fn zoom_percent(zoom: f32) -> i32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "zoom ∈ [0.3, 5.0] → percentual ∈ [30, 500]; sem truncação"
+    )]
+    let pct = (zoom * 100.0).round() as i32;
+    pct
+}
+
+/// M9: aplica um zoom à ABA ATIVA via `WebView::set_page_zoom` (clamp), espelha no `TabState` e
+/// atualiza o chrome imediatamente. `target(atual) -> novo` define a operação (in/out/reset).
+fn apply_zoom(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    app: &slint::Weak<MainWindow>,
+    target: impl Fn(f32) -> f32,
+) {
+    if let Some(m) = manager.borrow().as_ref() {
+        if let Some(tab) = m.active_tab() {
+            let z = target(tab.webview.page_zoom()).clamp(ZOOM_MIN, ZOOM_MAX);
+            tab.webview.set_page_zoom(z);
+            tab.state.page_zoom.set(z);
+            if let Some(app) = app.upgrade() {
+                app.set_zoom_percent(zoom_percent(z));
+            }
+        }
+        wake(m);
+    }
+}
+
 /// Registra os callbacks do chrome (Slint) que encaminham input e navegação à ABA ATIVA. Cada handler
 /// captura um clone do `manager` compartilhado; se o evento chegar antes do init lazy, é ignorado com
 /// segurança. Input/navegação sempre vão para a aba ativa (M4).
@@ -1073,6 +1113,19 @@ fn wire_chrome(
     app.on_reload(move || {
         with_active_webview(&mgr, WebView::reload);
     });
+
+    // M9: zoom de página (Ctrl +/−/0 e o menu ⋯). Aplica na aba ativa e reflete o % no chrome.
+    let mgr = manager.clone();
+    let weak = app.as_weak();
+    app.on_zoom_in(move || apply_zoom(&mgr, &weak, |z| z + ZOOM_STEP));
+
+    let mgr = manager.clone();
+    let weak = app.as_weak();
+    app.on_zoom_out(move || apply_zoom(&mgr, &weak, |z| z - ZOOM_STEP));
+
+    let mgr = manager.clone();
+    let weak = app.as_weak();
+    app.on_zoom_reset(move || apply_zoom(&mgr, &weak, |_| 1.0));
 }
 
 /// Reflete o estado da ABA ATIVA nas propriedades do chrome (Slint). Chamado pelo loop quando o
@@ -1091,6 +1144,7 @@ fn sync_chrome(app: &MainWindow, manager: &TabManager) {
     app.set_loading(state.loading.get());
     app.set_can_go_back(state.can_go_back.get());
     app.set_can_go_forward(state.can_go_forward.get());
+    app.set_zoom_percent(zoom_percent(state.page_zoom.get())); // M9: zoom da aba ativa (menu ⋯).
     let title = state.title.borrow();
     let shown = if title.is_empty() {
         "BasedBrowser".to_string()

@@ -175,8 +175,8 @@ export component MainWindow inherits Window {
     in property <string> window-title: "BasedBrowser";
     // M9: URL atual é https (cadeado fechado) — derivado no Rust (sync_chrome).
     in property <bool> page-secure: false;
-    // M9: zoom da aba ativa (1.0 = 100%) — mostrado no menu ⋯.
-    in property <float> page-zoom: 1.0;
+    // M9: zoom da aba ativa em % (inteiro) — mostrado no menu ⋯.
+    in property <int> zoom-percent: 100;
     // M4: lista de abas (derivada do TabManager no Rust).
     in property <[TabInfo]> tabs;
     // M4: lista de favoritos (derivada do AppData no Rust).
@@ -224,6 +224,10 @@ export component MainWindow inherits Window {
     callback toggle-devtools();
     callback dev-eval(string);
     callback clear-devtools();
+    // M9: zoom de página (Ctrl +/−/0 e o menu ⋯).
+    callback zoom-in();
+    callback zoom-out();
+    callback zoom-reset();
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -787,6 +791,57 @@ export component MainWindow inherits Window {
                                 root.menu-open = false;
                                 root.devtools-open = true;
                                 root.toggle-devtools();
+                            }
+                        }
+                        // Separador antes da linha de zoom.
+                        Rectangle {
+                            height: 7px;
+                            Rectangle {
+                                y: 3px;
+                                height: 1px;
+                                background: Theme.border;
+                            }
+                        }
+                        // Zoom (M9): − [NN%] + — não fecha o menu (permite ajustar várias vezes).
+                        Rectangle {
+                            height: 34px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 6px;
+                                spacing: 6px;
+                                Text {
+                                    text: "Zoom";
+                                    color: Theme.text-mid;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                IconBtn {
+                                    width: 26px;
+                                    height: 26px;
+                                    glyph: "−";
+                                    glyph-size: 18px;
+                                    glyph-color: Theme.text-hi;
+                                    hover-bg: Theme.bg-surface;
+                                    clicked => { root.zoom-out(); }
+                                }
+                                Text {
+                                    width: 50px;
+                                    text: "\{root.zoom-percent}%";
+                                    color: Theme.text-hi;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                IconBtn {
+                                    width: 26px;
+                                    height: 26px;
+                                    glyph: "+";
+                                    glyph-size: 18px;
+                                    glyph-color: Theme.text-hi;
+                                    hover-bg: Theme.bg-surface;
+                                    clicked => { root.zoom-in(); }
+                                }
                             }
                         }
                     }
