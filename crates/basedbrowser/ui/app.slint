@@ -192,6 +192,10 @@ export component MainWindow inherits Window {
     in-out property <bool> find-open: false;
     in property <int> find-count: 0;
     in property <int> find-index: 0;
+    // M9: menu de contexto (right-click na área web). Posição em coords LÓGICAS (mouse-x/y do Slint).
+    in-out property <bool> ctx-open: false;
+    property <length> ctx-x;
+    property <length> ctx-y;
     // M7 (ADR-0010): painel de devtools (console/eval + rede). Models e status vêm do Rust.
     in property <[DevConsoleLine]> dev-console;
     in property <[DevNetRow]> dev-net;
@@ -502,14 +506,24 @@ export component MainWindow inherits Window {
                     width: 100%;
                     height: 100%;
                     pointer-event(e) => {
-                        root.forward-pointer(
-                            self.mouse-x,
-                            self.mouse-y,
-                            e.kind == PointerEventKind.down ? 0
-                                : e.kind == PointerEventKind.up ? 1 : 2,
-                            e.button == PointerEventButton.left ? 0
-                                : e.button == PointerEventButton.right ? 1
-                                : e.button == PointerEventButton.middle ? 2 : 3);
+                        // M9: right-click abre o menu de contexto do chrome (não repassa à página).
+                        if (e.button == PointerEventButton.right) {
+                            if (e.kind == PointerEventKind.down) {
+                                root.ctx-x = self.mouse-x;
+                                root.ctx-y = self.mouse-y;
+                                root.ctx-open = true;
+                                root.menu-open = false;
+                            }
+                        } else {
+                            root.forward-pointer(
+                                self.mouse-x,
+                                self.mouse-y,
+                                e.kind == PointerEventKind.down ? 0
+                                    : e.kind == PointerEventKind.up ? 1 : 2,
+                                e.button == PointerEventButton.left ? 0
+                                    : e.button == PointerEventButton.right ? 1
+                                    : e.button == PointerEventButton.middle ? 2 : 3);
+                        }
                         fs.focus();
                     }
                     scroll-event(e) => {
@@ -837,6 +851,70 @@ export component MainWindow inherits Window {
                         clicked => {
                             root.find-open = false;
                             root.find-close();
+                        }
+                    }
+                }
+            }
+
+            // Menu de contexto (M9): right-click na área web. Itens reusam os callbacks de navegação;
+            // clicar fora fecha. Posicionado no ponto do clique (clampeado p/ caber na área).
+            if root.ctx-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea {
+                    clicked => { root.ctx-open = false; }
+                }
+                Rectangle {
+                    x: min(root.ctx-x, parent.width - self.width - 8px);
+                    y: min(root.ctx-y, parent.height - self.height - 8px);
+                    width: 204px;
+                    background: Theme.bg-elevated;
+                    border-radius: Theme.radius-panel;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-color: #00000070;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-offset-y: 10px;
+                    TouchArea { }
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+                        MenuItem {
+                            label: "Voltar";
+                            clicked => {
+                                root.ctx-open = false;
+                                root.go-back();
+                            }
+                        }
+                        MenuItem {
+                            label: "Avançar";
+                            clicked => {
+                                root.ctx-open = false;
+                                root.go-forward();
+                            }
+                        }
+                        MenuItem {
+                            label: "Recarregar";
+                            clicked => {
+                                root.ctx-open = false;
+                                root.reload();
+                            }
+                        }
+                        Rectangle {
+                            height: 7px;
+                            Rectangle {
+                                y: 3px;
+                                height: 1px;
+                                background: Theme.border;
+                            }
+                        }
+                        MenuItem {
+                            label: "Inspecionar";
+                            clicked => {
+                                root.ctx-open = false;
+                                root.devtools-open = true;
+                                root.toggle-devtools();
+                            }
                         }
                     }
                 }
