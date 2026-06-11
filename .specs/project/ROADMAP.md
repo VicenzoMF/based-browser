@@ -1,11 +1,12 @@
 # Roadmap
 
-**Current Milestone:** Sustentabilidade (runbook + CI do pin do Servo, Goal #3) e/ou outras plataformas
-(PLANNED — ver Future Considerations).
-**Status:** M0–M7 ✅ concluídos (M0–M4 em 2026-06-10; **M5, M6 e M7 em 2026-06-11**). M5 = tese VALIDADA
+**Current Milestone:** Outras plataformas (Windows/DirectX, macOS/Metal, Android) — PLANNED (ver Future
+Considerations). **Todos os 3 Goals do PROJECT ✅ atacados** (footprint M5; motor M1–M3; sustentabilidade M8).
+**Status:** M0–M8 ✅ concluídos (M0–M4 em 2026-06-10; **M5–M8 em 2026-06-11**). M5 = tese VALIDADA
 (ADR-0008). M6 = recursos de usuário (cookies/Web Storage PERSISTEM; "limpar dados"; downloads DEFERIDO,
-ADR-0009). **M7 = devtools / inspeção in-app** (console + eval + rede req/resp via cliente RDP próprio,
-SEM Firefox; OPT-IN, ADR-0010).
+ADR-0009). M7 = devtools / inspeção in-app (console + eval + rede req/resp via cliente RDP próprio,
+SEM Firefox; OPT-IN, ADR-0010). **M8 = sustentabilidade (Goal #3)** — CI na revisão fixada + runbook
+medido de bump + archgate + sandbox sem egress (ADR-0011).
 
 ---
 
@@ -250,7 +251,43 @@ header, models do painel populados).
 
 ---
 
-## Future Considerations (pós-M7)
+## M8 — Sustentabilidade (Goal #3) ✅ CONCLUÍDO (2026-06-11)
 
-- **Sustentabilidade:** runbook + CI de atualização do pin do Servo (Goal #3; mitiga L-001). Harness H3.
-- Suporte a outras plataformas (Windows/DirectX, macOS/Metal, Android).
+**Goal:** Fechar o **último Goal do PROJECT** ("atualizar a revisão fixada do Servo em **< 1 dia por
+sprint**") e operacionalizar a defesa contra o risco existencial **L-001** (churn do Verso). A incerteza
+era de INFRA ("cabe um CI completo do Servo num runner free?"). **Atingido** — decisões em **ADR-0011**.
+Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T0–T6).
+
+### Features
+
+**CI na revisão fixada** - DONE
+
+- `.github/workflows/ci.yml`: push(main)+PR+manual; runner `ubuntu-24.04` free (repo público). Espelha o
+  gate local: **archgate → fmt → clippy `--exclude servo-poc -D warnings` → test**. `free-disk-space`
+  (~31 GB) → apt (~40 pkgs, loop resiliente a renames mesa) → `actions-rust-lang/setup-rust-toolchain`
+  (lê o `rust-toolchain.toml`=1.92.0 + cache) → gate. Actions pinadas por SHA (L-002); `RUSTFLAGS`
+  neutralizado. **Validado na prática:** 1º run a frio VERDE em ~15,5 min (cold-build do motor+mozjs cabe).
+
+**Runbook de bump (medido)** - DONE
+
+- `docs/runbooks/atualizar-servo.md` + `scripts/update-servo/run.sh`: bump determinístico num **git
+  worktree isolado** (não toca o pin protegido da `main`), reusa o cache, **cronometra vs "< 1 dia"**.
+  Dry-run validado (rehearsal 0.2.0, cache quente): gate **VERDE em ~81s**. `0.2.0` é a versão mais nova
+  publicada (sem alvo de upgrade real ainda) → medição de churn de upgrade ocorre no próximo release.
+
+**Archgate (ADR↔check) + sandbox sem egress** - DONE
+
+- `scripts/checks/` (rodam no lefthook E no CI): `check-servo-pin` (pin nos 2 crates + toolchain = ADR-
+  0002; divergência → exit 2 com instrução **ERRO/POR QUÊ/FIX/EXEMPLO**) + `check-adr-status`. Sandbox
+  (`sandbox/`): `network_mode: none` + caps + non-root, no-egress **verificável** (smoke `OK: sem egress`);
+  headful documentado c/ caveat de GPU/display (CI não roda — headless, L-008).
+
+---
+
+## Future Considerations (pós-M8)
+
+- **Outras plataformas:** Windows/DirectX, macOS/Metal, Android (matriz multi-OS no mesmo CI). É o próximo
+  marco natural (os 3 Goals do PROJECT já foram atacados).
+- **Otimizar o baseline absoluto** (171 MiB ociosos; M5 só MEDIU) — candidato a marco futuro.
+- **Downloads** / **modo privado** (deferidos do M6); **DevTools v2** / hardening por token (deferidos do M7).
+- **sccache** no CI se o cache de 10 GB do GHA estourar (deferido do M8).

@@ -1,7 +1,31 @@
 # State
 
 **Last Updated:** 2026-06-11
-**Current Work:** **Marco M7 CONCLUÍDO** ✅ — **devtools / inspeção in-app** (console + eval + rede), **sem Firefox externo**. Era o marco de MAIOR incerteza de API; a pesquisa NA FONTE concluiu que (ao contrário dos downloads do M6) a inspeção É viável por dois caminhos: **console/eval são in-process** (`WebViewDelegate::show_console_message` recebe todo `console.log` INCONDICIONALMENTE; `WebView::evaluate_javascript` → `JSValue`, com refs de DOM ⇒ inspeção via eval), e **a rede só sai pelo socket do servidor de devtools do Servo** (o crate `servo-devtools` é hermético; sem consumo in-process — a parede do M6/L-009). **Decisão do usuário (Plan Mode): construir o NOSSO cliente RDP in-app** (`src/devtools_client.rs`) que conecta no servidor do próprio Servo (loopback) e entrega **rede COMPLETA (req+resp, headers, payload, status)** no nosso UI — o caveat "só Firefox nightly" do upstream NÃO se aplica (os 2 lados são nossos, na 0.2.0 pinada; protocolo fixo pelo pin). `init_manager` liga o servidor OPT-IN (`BASEDBROWSER_DEVTOOLS`, loopback, porta fixa 7000 — efêmera `:0` é inútil pois o Servo reporta a porta PEDIDA, não a real do listener); `Embedder` é `ServoDelegate` (autoriza a conexão + spawna o cliente cedo). Painel no chrome (`ui/app.slint`): aba Console (log ao vivo + REPL de eval) + aba Rede (lista + detalhe de headers/payload). Threading respeita o ADR-0007 (cliente em thread dedicada → canal `mpsc` → Timer drena na thread de UI; nada toca o Slint na thread do cliente). Segurança: socket OFF por padrão, loopback, conexão autorizada; risco residual (outro processo local) aceito por ser opt-in/dev (hardening por token deferido). Decisões em **ADR-0010**; **AD-013** + **L-010** abaixo. Evidência (sem captura de janela, L-008): driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅: console hello-42, eval 2+2→4 e document.title→BBDEVTOOLS, rede GET status=200 + response header, models do painel populados). Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T1–T6). **Próximo: sustentabilidade (runbook + CI do pin do Servo, Goal #3) e/ou outras plataformas.**
+**Current Work:** **Marco M8 CONCLUÍDO** ✅ — **Sustentabilidade (Goal #3)**, o ÚLTIMO Goal do PROJECT ainda
+não atacado; mitiga o risco existencial **L-001** (o Verso morreu afogado no churn do Servo) transformando
+a lição num MECANISMO. Entregue: **(1) CI** (`.github/workflows/ci.yml`) que valida o gate na revisão
+fixada (**archgate → fmt → clippy `--exclude servo-poc -D warnings` → test**) por push(main)+PR+manual,
+runner `ubuntu-24.04` free (repo público). A incerteza era de INFRA ("cabe um CI completo do Servo num
+runner free?"): RESOLVIDA NA PRÁTICA — o 1º run a frio passou por TODAS as etapas (free-disk-space ~31GB →
+apt ~40 pkgs com loop resiliente a renames mesa → `actions-rust-lang/setup-rust-toolchain` lê o
+`rust-toolchain.toml`=1.92.0 + cache → fmt → **clippy/cold-build do motor+mozjs VERDE** → test). NÃO
+precisou degradar. Prova decisiva prévia: o próprio CI do Servo roda assim. Pegadinha resolvida: a action
+seta `RUSTFLAGS=-D warnings` global por padrão → quebraria no warning de uma DEP (Servo) → **neutralizado**
+(`rustflags: ""`); o gate de lint vem do nosso clippy explícito. **(2) Runbook** (`docs/runbooks/
+atualizar-servo.md`) + `scripts/update-servo/run.sh`: mede um bump-candidato num **git worktree isolado**
+(não toca o pin protegido da `main`), reusa o cache, cronometra vs a meta "< 1 dia". Dry-run validado
+(rehearsal 0.2.0, cache quente): gate **VERDE em ~81s**; `0.2.0` é a versão mais nova publicada (sem alvo
+de upgrade real ainda) → a medição de churn de upgrade ocorre no próximo release (runbook pronto); um bump
+real = +~7 min de recompile do motor + triagem de churn, ambos << 1 dia. **(3) Archgate** (`scripts/
+checks/`, HARNESS-ROADMAP H3): checks com **erro-como-instrução** que acoplam ADR↔regra — `check-servo-pin`
+(pin nos 2 crates + toolchain = ADR-0002; divergência → exit 2 com FIX) + `check-adr-status`; rodam no
+lefthook E no CI. **(4) Sandbox sem egress** (`sandbox/`): garantia central (`network_mode: none`)
+**verificável** por smoke (`OK: sem egress`); render headful documentado com caveat de GPU/display (CI não
+roda — headless, L-008). Decisões em **ADR-0011**; **AD-014** + **L-011** abaixo. **6 commits atômicos
+(T0–T6).** Nenhuma dep nova; config protegida (pin/toolchain/lints/`.claude`/ADRs) intocada. **Próximo:
+outras plataformas (Windows/DirectX, macOS/Metal, Android).**
+
+**Marco M7 CONCLUÍDO** ✅ — **devtools / inspeção in-app** (console + eval + rede), **sem Firefox externo**. Era o marco de MAIOR incerteza de API; a pesquisa NA FONTE concluiu que (ao contrário dos downloads do M6) a inspeção É viável por dois caminhos: **console/eval são in-process** (`WebViewDelegate::show_console_message` recebe todo `console.log` INCONDICIONALMENTE; `WebView::evaluate_javascript` → `JSValue`, com refs de DOM ⇒ inspeção via eval), e **a rede só sai pelo socket do servidor de devtools do Servo** (o crate `servo-devtools` é hermético; sem consumo in-process — a parede do M6/L-009). **Decisão do usuário (Plan Mode): construir o NOSSO cliente RDP in-app** (`src/devtools_client.rs`) que conecta no servidor do próprio Servo (loopback) e entrega **rede COMPLETA (req+resp, headers, payload, status)** no nosso UI — o caveat "só Firefox nightly" do upstream NÃO se aplica (os 2 lados são nossos, na 0.2.0 pinada; protocolo fixo pelo pin). `init_manager` liga o servidor OPT-IN (`BASEDBROWSER_DEVTOOLS`, loopback, porta fixa 7000 — efêmera `:0` é inútil pois o Servo reporta a porta PEDIDA, não a real do listener); `Embedder` é `ServoDelegate` (autoriza a conexão + spawna o cliente cedo). Painel no chrome (`ui/app.slint`): aba Console (log ao vivo + REPL de eval) + aba Rede (lista + detalhe de headers/payload). Threading respeita o ADR-0007 (cliente em thread dedicada → canal `mpsc` → Timer drena na thread de UI; nada toca o Slint na thread do cliente). Segurança: socket OFF por padrão, loopback, conexão autorizada; risco residual (outro processo local) aceito por ser opt-in/dev (hardening por token deferido). Decisões em **ADR-0010**; **AD-013** + **L-010** abaixo. Evidência (sem captura de janela, L-008): driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅: console hello-42, eval 2+2→4 e document.title→BBDEVTOOLS, rede GET status=200 + response header, models do painel populados). Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T1–T6). **Próximo: sustentabilidade (runbook + CI do pin do Servo, Goal #3) e/ou outras plataformas.**
 
 **Marco M6 CONCLUÍDO** ✅ — **recursos de usuário**: fecha a lacuna que impedia o uso no dia a dia. **Persistência de cookies + `localStorage`/`sessionStorage`** entre execuções — `init_manager` agora aplica `ServoBuilder.opts(Opts{ config_dir: Some(~/.config/basedbrowser/servo/), ..Opts::default() })` (temporary_storage=false ⇒ persiste; o Servo passa o `config_dir` p/ `new_resource_threads` (cookies) E `new_storage_threads` (storage)). Mexida MÍNIMA e aditiva na API do Servo (1 ponto; embedding fino, L-001); não reorganiza o init lazy do GL (L-004); honra `XDG_CONFIG_HOME` (perfis-limpos do ADR-0008). **"Limpar dados de navegação"** (botão no chrome) = `clear_cookies()` + `clear_site_data(sites, Local|Session)` via `SiteDataManager` + `persist::clear_history()`; PRESERVA favoritos e a sessão (convenção de browser); roda em callback de UI (fora do `spin_event_loop`; invariante anti-reentrância do ADR-0007). **Downloads: SPIKE CONCLUÍDO — inviável na API estável do `servo 0.2.0`** (o embedder não vê os headers da RESPOSTA; `load_web_resource` só dá a request, `.intercept()` FORNECE a resposta, `network_manager()` só cache, `fetch_async` interno; sem API de download/link/menu) ⇒ auto-detecção de attachment é arquiteturalmente impossível, o workaround degrada p/ "cole-uma-URL" a custo real → **DEFERIDO** (não forçar). Decisões+veredito em **ADR-0009**; **AD-012** + **L-009** abaixo. Evidência reproduzível (sem captura de janela, L-008): drivers gated `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (`verify-persist.sh`: RUN2 lê `cookie=42 local=persisted-99`; `verify-clear.sh`: cookies/histórico→0, favoritos preservados). Nenhuma dep nova; config protegida intocada. 5 commits atômicos (T1–T5). **Próximo: M7 = devtools/inspeção.**
 
@@ -12,6 +36,23 @@
 ---
 
 ## Recent Decisions (Last 60 days)
+
+### AD-014: M8 — sustentabilidade (CI hospedado free + runbook medido + archgate + sandbox) (2026-06-11)
+
+**Decision:** Atacar o **Goal #3** (sustentabilidade) com um **CI completo no GitHub Actions** (espelha o
+gate local: archgate→fmt→clippy `-D warnings`→test; push+PR+manual; runner `ubuntu-24.04` free) + um
+**runbook determinístico medido** de bump do pin (`docs/runbooks/atualizar-servo.md` + `scripts/update-
+servo/run.sh` em git worktree isolado) + **archgate** (ADR↔check executável, erro-como-instrução) +
+**sandbox sem egress** (verificável). Formalizado no **ADR-0011**.
+**Reason:** É o único Goal não atacado e a defesa direta contra o L-001 (churn do Verso): updates do
+Servo passam a **falhar alto** (CI/archgate) em vez de em silêncio, e o procedimento de bump é **medível**
+vs "< 1 dia". A incerteza era INFRA (cabe no runner free?) — resolvida na prática: o cold-build do motor
+passou verde; o CI do próprio Servo já provava a viabilidade.
+**Trade-off:** ~40 pkgs apt (não 18); cache do GHA tem teto de 10 GB (fallback: cache só de `~/.cargo` /
+sccache, deferido); sandbox headful precisa de GPU/display via passthrough (no-egress é a garantia
+verificável); `RUSTFLAGS=-D warnings` da action precisou ser neutralizado p/ não quebrar no warning de dep.
+**Impact:** Goal #3 fechado; L-001 operacionalizado por mecanismo. Nenhuma dep nova; config protegida
+intocada; embedding fino preservado. Base p/ "outras plataformas" (matriz multi-OS no mesmo CI).
 
 ### AD-013: M7 — devtools in-app (console/eval in-process + cliente RDP próprio p/ rede) (2026-06-11)
 
@@ -249,6 +290,28 @@ pinada → não é "Firefox-frágil"), em thread dedicada + canal p/ a UI (ADR-0
 **Prevents:** travar o handshake numa corrida de timing, ou assumir consumo in-process que não existe, ou
 usar porta efêmera que o Servo não reporta. **Processo:** ler a fonte + probe empírico > chutar o protocolo.
 
+### L-011: CI do Servo cabe num runner free — mas tem 3 pegadinhas de infra (2026-06-11)
+
+**Context:** No M8, montando um CI hospedado que compila o motor Servo + mozjs do fonte (incerteza:
+"cabe num runner GitHub free?").
+**Problem/aprendizado:** o build CABE (4 vCPU/16 GB/14 GB SSD em repo público; o próprio CI do Servo roda
+assim), mas com **3 pegadinhas** que custariam um cold-build vermelho (~30 min) cada p/ descobrir: (1)
+**disco** — os 14 GB de fábrica NÃO bastam; `jlumbroso/free-disk-space` (libera ~31 GB) é OBRIGATÓRIO,
+não opcional (`tool-cache: false` p/ preservar toolchains). (2) **`RUSTFLAGS=-D warnings` global** —
+`actions-rust-lang/setup-rust-toolchain` seta isso por PADRÃO, e como `RUSTFLAGS` se aplica a TODAS as
+deps, um único warning do Servo/mozjs (que não controlamos) quebraria o build → **`rustflags: ""`** e
+deixar o gate de lint no clippy explícito (que só linta nossos crates). (3) **nomes apt transitórios** —
+`libegl1-mesa-dev`/`libgles2-mesa-dev` mudam entre 22.04/24.04 → loop resiliente que instala só o
+disponível (incluindo as duas formas) e LOGA o que pulou, em vez de `apt-get install` estourar num nome
+ausente. Bônus: `actions-rust-lang/setup-rust-toolchain` **respeita o `rust-toolchain.toml`** (instala
+exatamente o channel pinado) — `dtolnay/rust-toolchain` NÃO lê o arquivo (duplicaria o pin).
+**Solution:** de-riscar os 3 pontos ANTES do 1º push (pesquisa na fonte + Cargo.lock/testes headless
+checados localmente) e validar o resto **empiricamente** (push + `gh run watch`). Actions pinadas por SHA
+(L-002). O caminho degradado (CI manual/local) ficou documentado mas não foi necessário.
+**Prevents:** queimar ciclos de cold-build (~30 min cada) descobrindo disco/RUSTFLAGS/apt no vermelho, ou
+assumir que "CI completo roda de boa" sem reconfirmar na prática (padrão de honestidade M6/M7).
+**Processo:** ADR-0011 + archgate (ADR↔check) operacionalizam a decisão; runbook mede o Goal #3.
+
 ## Quick Tasks Completed
 
 | #   | Description | Date | Commit | Status |
@@ -266,11 +329,11 @@ usar porta efêmera que o Servo não reporta. **Processo:** ler a fonte + probe 
 - [ ] **`clear_session_cookies()`** (limpar só cookies de sessão) como opção granular no "limpar dados" — Captured during: M6
 - [ ] **Hardening do devtools por token** — exigir o `auth_token` (de `OnDevtoolsStarted`) em vez de autorizar toda conexão de loopback, fechando o risco residual de outro processo local conectar (ADR-0010). O quirk de comprimento do token (`servo-devtools/lib.rs:879`, `{:X}` de u32 com <8 dígitos hex) precisa ser contornado — Captured during: M7
 - [ ] **DevTools v2** — WebSocket/SSE na aba Rede, árvore de DOM visual (hoje DOM via eval), breakpoints/debugger (atores `thread`/`source`/`breakpoint` existem no `servo-devtools`), e talvez consumir o console TAMBÉM pelo RDP p/ stacktraces — Captured during: M7
-- [ ] CI que testa a revisão fixada do Servo a cada atualização — Captured during: project init
+- [x] **CI que testa a revisão fixada do Servo a cada atualização** — feito (M8, ADR-0011): `.github/workflows/ci.yml` (archgate+fmt+clippy+test) verde no runner free; cold-build do motor cabe — Captured during: project init
 - [ ] Render-diff / "olhos" E2E — **destravado (M1 ✅)**; nota: captura de **janela** automatizada está bloqueada no GNOME 46/Wayland (gdbus negado; `import`/X11 não vê Wayland). Caminho viável p/ E2E: dump in-app do frame (`BASEDBROWSER_DUMP_FRAME=<path>`) e comparar PNGs — Captured during: harness H2
-- [ ] Conteúdo do runbook de update do Servo — destrava no M0 — Captured during: harness H3
-- [ ] Custom lints com fix-instructions — adicionar quando o agente errar (princípio doc [A]) — Captured during: harness H3
-- [ ] Ativar a sandbox `sandbox/docker-compose.yml` (rodar browser sobre URL não confiável) — M1 — Captured during: harness H3
+- [x] **Conteúdo do runbook de update do Servo** — feito (M8, ADR-0011): `docs/runbooks/atualizar-servo.md` + `scripts/update-servo/run.sh` (medido vs "< 1 dia"; dry-run rehearsal verde em ~81s) — Captured during: harness H3
+- [x] **Custom lints com fix-instructions** — feito (M8): archgate (`scripts/checks/`) com erro-como-instrução (ERRO/POR QUÊ/FIX/EXEMPLO), acoplando ADR↔check (pin/toolchain/ADR-status). Adicionar mais quando o agente errar — Captured during: harness H3
+- [x] **Ativar a sandbox `sandbox/docker-compose.yml`** — feito (M8): no-egress verificável (smoke `OK: sem egress`); render headful documentado c/ caveat GPU/display — Captured during: harness H3
 - [x] **Waker real** (`EventLoopWaker` que acorda o loop sob demanda) — feito (T6/M3, AD-009): `ServoWaker` + spin adaptativo (60 Hz ativo / ~10 Hz ocioso, ramp por `wake()`/input). Sem regressão (62 fps animado). Achado: o CPU ocioso em release já era baixo (~5%); o gating de spin não o muda — o lever real é o intervalo de polling (abaixo)
 - [ ] **Intervalo de polling adaptativo** (reschedule do `Timer` p/ frequência menor quando ocioso) — reduziria o custo ocioso do event-loop em si; risco de ramp de animação se o Servo não acordar sempre via `wake()` — Captured during: M3
 - [ ] Tratar `Code` físico do teclado (hoje `Code::Unidentified`) p/ atalhos que dependem dele — Captured during: M2
@@ -297,6 +360,7 @@ usar porta efêmera que o Servo não reporta. **Processo:** ler a fonte + probe 
 - [x] **M5: validar a tese (footprint vs. Chromium)** — feito (ADR-0008, AD-011, L-008): harness bash `scripts/m5/` (`measure.sh`+`run.sh`+`pages/`), PPID-walk de `/proc/smaps_rollup`, PSS-título, soma da árvore, perfil limpo, release, K=5. Hook `BASEDBROWSER_OPEN_TABS`. **Tese VALIDADA** (ocioso BB 171,1 MiB PSS / 1 proc vs Chrome 314,7 / 13 proc = 1,84×; por-aba 5,5 vs 11,8 MiB = 2,16×; pesada 205 vs 333 MiB). "Ordens de magnitude" qualificado p/ ~1,8× (PSS). Commits atômicos T1–T7
 - [x] **M6: recursos de usuário** — feito (ADR-0009, AD-012, L-009): persistência de cookies + Web Storage via `opts.config_dir` (`init_manager`); "limpar dados de navegação" (cookies/storage via `SiteDataManager` + histórico, preserva favoritos); downloads DEFERIDO (inviável na API estável do Servo 0.2.0). Evidência: drivers `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (verify-persist: RUN2 lê `cookie=42 local=persisted-99`; verify-clear: cookies/histórico→0, favoritos preservados). Nenhuma dep nova. 5 commits T1–T5
 - [x] **M7: devtools / inspeção in-app** — feito (ADR-0010, AD-013, L-010): console (`show_console_message`) + eval (`evaluate_javascript`) in-process + **cliente RDP próprio** (`src/devtools_client.rs`) p/ rede completa (req+resp/headers/payload) conectando no servidor de devtools do Servo (loopback, OPT-IN `BASEDBROWSER_DEVTOOLS`); painel no `ui/app.slint` (Console + Rede). Evidência: driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅). Nenhuma dep nova. 6 commits T1–T6
+- [x] **M8: sustentabilidade (Goal #3)** — feito (ADR-0011, AD-014, L-011): **CI** (`.github/workflows/ci.yml`, archgate+fmt+clippy+test) verde no runner free (cold-build do motor cabe; prova: o CI do próprio Servo) + **runbook** medido (`docs/runbooks/atualizar-servo.md` + `scripts/update-servo/run.sh`, worktree isolado; dry-run rehearsal verde ~81s vs meta < 1 dia) + **archgate** (`scripts/checks/`, ADR↔check erro-como-instrução) + **sandbox sem egress** (smoke `OK: sem egress`). Pegadinhas de infra (L-011): free-disk-space obrigatório, `rustflags:""`, apt resiliente a renames. Nenhuma dep nova; config protegida intocada. 6 commits T0–T6
 
 ---
 

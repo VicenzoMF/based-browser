@@ -24,6 +24,23 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
+Marco **M8 ✅** — **Sustentabilidade (Goal #3)**, o ÚLTIMO Goal do PROJECT; mitiga o risco existencial
+**L-001** (churn do Servo) por MECANISMO. **(1) CI** (`.github/workflows/ci.yml`, push+PR+manual, runner
+`ubuntu-24.04` free) espelha o gate local: **archgate → fmt → clippy `--exclude servo-poc -D warnings` →
+test**. A incerteza era INFRA ("cabe um CI completo do Servo no runner free?") — RESOLVIDA NA PRÁTICA: 1º
+run a frio **VERDE em ~15,5 min** (`jlumbroso/free-disk-space` ~31 GB → apt ~40 pkgs com loop resiliente a
+renames mesa → `actions-rust-lang/setup-rust-toolchain` lê o `rust-toolchain.toml`=1.92.0 + cache →
+clippy/cold-build do motor+mozjs VERDE → test). Pegadinha (L-011): a action seta `RUSTFLAGS=-D warnings`
+GLOBAL → quebraria no warning de uma DEP → **neutralizado** (`rustflags: ""`); gate de lint fica no clippy
+explícito. Actions pinadas por SHA (L-002). **(2) Runbook** (`docs/runbooks/atualizar-servo.md` +
+`scripts/update-servo/run.sh`): bump medido num **git worktree isolado** (não toca o pin protegido) vs a
+meta "< 1 dia"; dry-run rehearsal 0.2.0 (cache quente) VERDE em ~81s. **(3) Archgate** (`scripts/checks/`,
+H3): `check-servo-pin` (pin nos 2 crates + toolchain = ADR-0002; divergência → exit 2 com **ERRO/POR QUÊ/
+FIX/EXEMPLO**) + `check-adr-status`; rodam no lefthook E no CI (acopla ADR↔check). **(4) Sandbox sem
+egress** (`sandbox/`): `network_mode: none` verificável por smoke (`OK: sem egress`); headful documentado
+c/ caveat GPU/display (CI é headless, L-008). Bump REAL do pin exige ADR novo + atualizar `EXPECT_*` no
+check. Decisões em **ADR-0011** · **AD-014** · **L-011**. Nenhuma dep nova; config protegida intocada. 6
+commits (T0–T6). Próximo: **outras plataformas (Windows/DirectX, macOS/Metal, Android)**.
 Marco **M7 ✅** — **devtools / inspeção in-app** (console + eval + rede), **sem Firefox externo**. Era o
 marco de MAIOR incerteza de API. **Console** chega ao embedder INCONDICIONALMENTE
 (`WebViewDelegate::show_console_message` no `Embedder`, `src/main.rs`); **eval** via
