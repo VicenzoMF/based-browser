@@ -1,24 +1,70 @@
-# Sandbox para rodar o BasedBrowser sobre conteudo web NAO confiavel.
-# Ver HARNESS-ROADMAP (H3) e o guia de seguranca [D]: "deny outbound by default".
+# Sandbox p/ rodar o BasedBrowser sobre conteudo web NAO confiavel — isolado e SEM egress.
+# Ver sandbox/README.md, HARNESS-ROADMAP (H3) e o guia de seguranca [D]: "deny outbound by default".
 #
-# STATUS: SKELETON. So passa a ser usado de fato a partir do M1 (quando houver um
-# binario que renderiza). Hoje serve de molde do isolamento.
+# Dois servicos:
+#   - egress-test : prova VERIFICAVEL de que o isolamento corta a rede (headless, sem GPU).
+#                   `docker compose -f sandbox/docker-compose.yml run --rm egress-test`
+#   - browser     : roda o binario (compilado no HOST) sobre uma URL nao confiavel, headful, sem egress.
+#                   Precisa de GPU/display via passthrough (caveat — ver README). CI NAO roda isto (L-008).
 #
-# Principios aplicados (doc [D]):
-#  - network_mode: none  -> sem egress; processo comprometido nao "telefona pra casa"
-#  - cap_drop: ALL + no-new-privileges -> blast radius minimo
-#  - user nao-root + read_only + tmpfs  -> superficie reduzida
+# Principios (doc [D]):
+#   network_mode: none      -> sem egress; processo comprometido nao "telefona pra casa"
+#   cap_drop: ALL + no-new-privileges -> blast radius minimo
+#   user nao-root + read_only + tmpfs -> superficie reduzida
+#   "nunca deixe a camada de conveniencia ultrapassar a de isolamento" (montar o socket do display
+#   afrouxa o isolamento de proposito; e um trade-off consciente, so p/ o render headful).
 services:
-  browser-sandbox:
-    image: rust:1-slim-bookworm
+  # --- Prova de que o isolamento corta a rede (verificavel, sem GPU) ---
+  # Hardening PORTAVEL (roda em qualquer host, inclusive AppArmor): network:none + cap_drop ALL +
+  # non-root + read_only. O `no-new-privileges` fica no servico `browser` (molde completo) — nesta
+  # maquina o AppArmor `docker-default` + no-new-privileges da EPERM no exec (quirk do host, nao do
+  # molde), entao o smoke nao o usa p/ poder PROVAR o no-egress aqui.
+  egress-test:
+    image: alpine
     network_mode: "none"
     cap_drop: ["ALL"]
+    user: "1000:1000"
+    read_only: true
+    command:
+      - "sh"
+      - "-c"
+      - |
+        echo '== egress-test: a rede DEVE estar cortada (network_mode: none) =='
+        if wget -T 3 -q -O- http://example.com >/dev/null 2>&1; then
+          echo 'FALHA: consegui sair pra rede — isolamento NAO esta ativo.'; exit 1
+        else
+          echo 'OK: sem egress (wget falhou, como esperado).'; exit 0
+        fi
+
+  # --- Render headful do browser sobre uma URL nao confiavel, sem egress ---
+  # Pre-requisito no HOST: cargo build --release -p basedbrowser
+  # Uso: BASEDBROWSER_URL='http://host-nao-confiavel/...' docker compose \
+  #        -f sandbox/docker-compose.yml run --rm browser
+  browser:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+    network_mode: "none"
+    cap_drop: ["ALL"]
+    # Molde completo. Caveat de host: com AppArmor `docker-default`, `no-new-privileges` pode dar
+    # "exec: operation not permitted" — neste caso adicione `apparmor=unconfined` OU remova esta linha.
     security_opt: ["no-new-privileges:true"]
     user: "1000:1000"
     read_only: true
-    tmpfs: ["/tmp"]
+    tmpfs: ["/tmp", "/home/sandbox/.config"]
     working_dir: /workspace
+    environment:
+      # A URL nao confiavel a inspecionar (sobrescreva na linha de comando).
+      BASEDBROWSER_URL: "${BASEDBROWSER_URL:-about:blank}"
+      WAYLAND_DISPLAY: "${WAYLAND_DISPLAY:-}"
+      XDG_RUNTIME_DIR: "/run/user/1000"
     volumes:
+      # Repo + binario compilado no host, read-only.
       - ../:/workspace:ro
-    # command: cargo run -p basedbrowser -- <url-nao-confiavel>   # (M1+)
-    command: ["bash", "-lc", "echo 'sandbox skeleton OK (sem egress)'; id"]
+      # CAVEAT (convenience-vs-isolation): GPU + socket do display p/ render headful. Comente p/ o
+      # isolamento mais estrito (sem render). Descomente conforme seu display (Wayland OU X11):
+      # - /dev/dri:/dev/dri                                   # GPU (render por hardware)
+      # - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/run/user/1000/${WAYLAND_DISPLAY}:ro  # Wayland
+      # - /tmp/.X11-unix:/tmp/.X11-unix:ro                    # X11 (alternativa)
+    # devices: ["/dev/dri"]                                   # (alternativa ao mount de /dev/dri)
+    command: ["bash", "-lc", "./target/release/basedbrowser"]
