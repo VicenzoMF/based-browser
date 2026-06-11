@@ -466,7 +466,40 @@ fn init_manager(
             true,
         );
     }
+    // M5: hook do harness de medição de footprint — garante N abas da MESMA URL p/ medir o custo
+    // marginal por-aba. No-op sem a env (uma aba). Só `scripts/m5` usa (ver ADR-0008).
+    open_extra_measurement_tabs(&mut manager, web_size, window.scale_factor(), sink)?;
     Ok(manager)
+}
+
+/// M5 (harness de footprint): se `BASEDBROWSER_OPEN_TABS=N` (N > nº de abas atual) estiver setado,
+/// abre abas extras (de fundo) da home/URL resolvida até totalizar N — para medir o custo marginal
+/// por-aba (`scripts/m5/measure.sh`). As abas extras carregam via o `spin_event_loop` global (o
+/// `throttle` só pausa a PINTURA, não a carga/layout). No-op sem a env, com N <= nº de abas, ou URL
+/// inválida. Reusa `BASEDBROWSER_URL`; combine com `BASEDBROWSER_EXIT_AFTER_MS` p/ um run limpo.
+fn open_extra_measurement_tabs(
+    manager: &mut TabManager,
+    web_size: dpi::PhysicalSize<u32>,
+    scale: f32,
+    sink: &Rc<Embedder>,
+) -> Result<(), String> {
+    let Some(target) = std::env::var("BASEDBROWSER_OPEN_TABS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > manager.tabs.len())
+    else {
+        return Ok(());
+    };
+    let url = home_page_url()?;
+    let extra = target - manager.tabs.len();
+    for _ in 0..extra {
+        manager.open_tab(web_size, scale, url.clone(), sink, false);
+    }
+    eprintln!(
+        "[m5] BASEDBROWSER_OPEN_TABS={target}: abriu {extra} aba(s) extra(s) (total {})",
+        manager.tabs.len()
+    );
+    Ok(())
 }
 
 /// Restaura as abas da sessão salva (`session.json`): abre cada URL como uma aba (de fundo) e ativa a
