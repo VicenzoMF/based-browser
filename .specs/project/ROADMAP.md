@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current Milestone:** M4 — Recursos de navegador
-**Status:** M3 ✅ concluído em 2026-06-10 (M0, M1, M2 ✅ no mesmo dia)
+**Current Milestone:** M4 ✅ concluído — próximo: M5 (a definir; ver Future Considerations)
+**Status:** M0–M4 ✅ concluídos em 2026-06-10
 
 ---
 
@@ -105,15 +105,42 @@ cópia-CPU. Renderer do Slint trocado p/ `femtovg-wgpu` (Vulkan). Decisões em *
 
 ---
 
-## M4 — Recursos de navegador
+## M4 — Recursos de navegador ✅ CONCLUÍDO (2026-06-10)
 
 **Goal:** Funcionalidades que tornam o browser usável no dia a dia (dentro dos limites de compat do Servo).
+**Atingido** — `crates/basedbrowser` evoluiu o pipeline do M3 com multi-aba, histórico e favoritos.
+Decisões em **ADR-0007**. Chrome migrado da macro inline grande p/ `ui/app.slint` (re-export inline,
+SEM build.rs — mantém o gate de lint verde). Deps novas: `serde`/`serde_json`/`dirs`. 8 commits
+atômicos (T1–T7 + T4b).
 
 ### Features
 
-**Multi-aba** - PLANNED
-**Histórico de sessão** - PLANNED
-**Favoritos** - PLANNED
+**Multi-aba** - DONE
+
+- UM `Servo`, N `WebView`s (`TabManager`/`Tab`); cada aba com seu `OffscreenRenderingContext` (FBO
+  próprio) derivado do `WindowRenderingContext` pai. Só a aba ATIVA é pintada/blitada — **reusa a ponte
+  GPU zero-copy do M3** trocando só a origem do blit (FBO da ativa). Abas de fundo `set_throttled(true)`,
+  não bombeadas (economia). Abrir (+)/fechar (×)/trocar (clique) na barra de abas; `window.open`/
+  `target=_blank` abre nova aba (fila diferida). Input/navegação vão p/ a aba ativa.
+- Evidência: abrir(1→2)→page2→trocar→fechar(2→1) com conteúdo distinto por aba (aba1 VERDE/page2 no
+  FBO próprio, textura ativa final ROXO/aba0); `window.open` → 2 abas; sem panic/borrow reentrante.
+
+**Histórico de sessão** - DONE
+
+- Visitas gravadas (alimentadas por `notify_url_changed`), persistidas em `~/.config/basedbrowser/
+  history.json` (dedup consecutivo + teto FIFO 1000). Painel (botão ☰) com lista + busca (revisitar) +
+  autocomplete na barra de URL. Evidência: 8 visitas persistidas → painel popula (dedup), busca filtra,
+  autocomplete sugere, revisita carrega.
+
+**Favoritos** - DONE
+
+- ★ adiciona a página atual; barra de favoritos (clique abre / × remove); persistidos em
+  `bookmarks.json`. Evidência: ★ → arquivo com 1 entrada → 2ª execução CARREGA o favorito.
+
+**Restauração de sessão** - DONE
+
+- Abas abertas (URLs + índice ativo) salvas no exit, restauradas no start (`init_manager`); precede o
+  `BASEDBROWSER_URL`. Evidência: RUN 1 salva 2 abas (ativa=1) → RUN 2 restaura 2 abas, ativa=1.
 
 ---
 

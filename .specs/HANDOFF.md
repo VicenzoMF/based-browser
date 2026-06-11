@@ -1,66 +1,58 @@
 # Handoff
 
 **Date:** 2026-06-10
-**Feature:** M3 — Render GPU zero-copy ✅ CONCLUÍDO · próximo = M4 (recursos de navegador)
-**Task:** M3 fechado: texture sharing Vulkan↔GL elimina a cópia-CPU por frame. Iniciar M4.
+**Feature:** M4 — Recursos de navegador ✅ CONCLUÍDO · próximo = M5 (a definir)
+**Task:** M4 fechado: multi-aba + histórico + favoritos + restauração de sessão. Iniciar M5.
 
 ## Completed ✓
 
-- **M3 done** (critério: frame Servo→Slint SEM cópia-CPU + benchmark mostrando ganho + evidência):
-  - **Renderer** (T0): Slint femtovg/GL → **`femtovg-wgpu` (Vulkan)** via `unstable-wgpu-28` +
-    `BackendSelector::require_wgpu_28(Automatic)`. Smoke: app renderiza no novo renderer, sem erros
-    de GL (L-004 não regrediu). ADR-0005.
-  - **Benchmark** (T1): `FrameBench` (env `BASEDBROWSER_BENCH`) mede o tempo do `pump_frame`; override
-    `BASEDBROWSER_URL` p/ benchmark reproduzível. Baseline cópia-CPU ~5,4 ms.
-  - **Zero-copy** (T2–T4, `src/gpu_bridge.rs`): imagem Vulkan c/ memória externa (`OPAQUE_FD`) → FD →
-    import no GL do Servo (`glImportMemoryFdEXT`/`glTexStorageMem2DEXT`) → `wgpu::Texture`
-    (`create_texture_from_hal`/`texture_from_raw(External)`) → `Image::try_from`. Por frame:
-    `paint` → `glBlitFramebuffer` (flip Y) → `glFinish` → `set_frame`. Device wgpu capturado via
-    `set_rendering_notifier`; handles via `as_hal::<Vulkan>()`. Todo `unsafe` isolado/justificado.
-    **Fallback** de cópia-CPU em runtime (não foi necessário).
-  - **Evidência:** readback da textura compartilhada **byte a byte idêntico** à fonte do Servo
-    (1024×724, orientação correta) — `/tmp/m3-evidence-source.png` ≡ `/tmp/m3-evidence-gpu-zerocopy.png`;
-    página HTTPS real (example.com) renderizada pelo zero-copy (`/tmp/m3-real.png.gpu.png`).
-  - **Benchmark (release, 60fps):** `pump_frame` mean **5,4 ms (CPU) → 3,1 ms (GPU)**, p95 ~6–9 →
-    ~3,7 ms (**−40% média, −50% p95**). Ataca o L-005.
-  - **ADR-0005** (arquitetura) + **ADR-0006** (validação/fechamento). **AD-009** + **L-006** no STATE.
-    Deps novas: `ash 0.38` + `gl 0.14` (wgpu via `slint::wgpu_28::wgpu`); pin `servo =0.2.0`/toolchain/
-    lints raiz intocados. Commits: T0 (renderer), T1 (benchmark), T2–T4 (zero-copy).
-  - **Waker real** (T6): `ServoWaker` substitui o no-op; loop spina adaptativo (60 Hz ativo / ~10 Hz
-    ocioso, ramp por `wake()`/input). 62 fps animado sem regressão. CPU ocioso em release já era baixo
-    (~5%) → ganho absoluto modesto; lever maior (intervalo de polling adaptativo) fica deferred.
+- **M4 done** (critério: multi-aba funciona / abas de fundo não gastam / histórico registra+revisita /
+  favoritos persistem / sessão restaura — tudo com evidência; M0–M3 intactos):
+  - **T1 — chrome → `ui/app.slint`** (re-export inline `slint::slint!(export {..} from "../ui/app.slint")`).
+    NÃO `build.rs`/`include_modules!()` — o gerado viraria fonte do crate e quebraria os lints `deny`
+    (640 erros `unwrap_used`); a macro inline é isenta do clippy (L-007). ADR-0007 §5.
+  - **T2 — `src/persist.rs`** (deps `serde`/`serde_json`/`dirs`): JSON em `~/.config/basedbrowser/`,
+    escrita atômica (tmp+rename), tolerante a falha. Models Bookmark/HistoryEntry/Session + `AppData`.
+    6 testes unitários. Histórico alimentado por `notify_url_changed`; sessão salva no exit.
+  - **T3 — `Runtime`→`TabManager`** (1 aba = paridade M3): N WebViews/1 Servo; cada `Tab` com seu
+    `OffscreenRenderingContext` (FBO próprio); `Embedder` roteia por `webview.id()` → `TabState`;
+    ponte GPU do M3 reusada (blit da aba ativa). Zero-copy preservado.
+  - **T4 — barra de abas** (abrir/fechar/trocar + throttle de fundo) **+ T4b — `window.open`** (fila
+    diferida `pending_new` drenada pós-spin).
+  - **T5 — favoritos** (★/barra, persistido) · **T6 — histórico** (painel ☰ com busca + autocomplete)
+    · **T7 — restauração de sessão** (`init_manager`/`restore_session`; precede `BASEDBROWSER_URL`).
+  - **ADR-0007** (estende 0003/0004/0005) + **AD-010** + **L-007** no STATE. 8 commits atômicos.
+  - **Evidência** (captura de janela bloqueada no Wayland → drivers in-app + dumps): abrir/trocar/
+    fechar com conteúdo distinto por aba (aba1 VERDE/page2, ativa final ROXO/aba0); `window.open` →
+    2 abas; favoritos+histórico carregam entre runs; sessão de 2 abas (ativa=1) restaurada.
 
 ## In Progress
 
-- Nada — checkpoint limpo na `main` (T0/T1/T2–T4 commitados; este commit = docs/STATE/ROADMAP/HANDOFF).
+- Nada — checkpoint limpo na `main` (T1–T7 + T4b commitados e pushados; este commit = ADR-0007 + docs).
 
-## Pending (M4 — Recursos de navegador)
+## Pending (M5 — a definir)
 
-1. Multi-aba, histórico de sessão, favoritos (dentro dos limites de compat do Servo).
-2. (barato, paralelo) **Sync por fence/semáforo** no lugar do `glFinish` (ganho extra sobre os 3,1 ms).
-3. (futuro) **Intervalo de polling adaptativo** (reschedule do `Timer` quando ocioso) — o waker real (T6)
-   já está feito, mas o CPU ocioso em release já era baixo (~5%); reduzi-lo de verdade exige baixar a
-   frequência do polling do event-loop, com risco de ramp de animação.
+1. Escolher o foco do M5 (ver ROADMAP "Future Considerations"): devtools/inspeção; gestão de cookies/
+   armazenamento/downloads; medição de RAM vs. Chromium; CI que testa o pin do Servo; outras plataformas.
+2. (barato, paralelo) **Sync GPU por fence/semáforo** no lugar do `glFinish` do M3.
+3. (futuro) **Intervalo de polling adaptativo** do event-loop (waker real já feito no T6/M3).
 
 ## Blockers
 
-- Nenhum ativo. Pendências humanas (não bloqueiam M4): conectores globais claude.ai (só na web);
-  2 deny rules do AgentShield no `settings.json` (precisa de OK explícito).
+- Nenhum ativo. Pendências humanas (não bloqueiam): conectores globais claude.ai (só na web); 2 deny
+  rules do AgentShield no `settings.json` (precisa de OK explícito); README.md na raiz (opcional).
 
 ## Context
 
-- Branch: `main`. Idioma: **pt-BR**. Plan Mode antes de executar.
-- **M3 (ADR-0005/0006 / L-006):** GL e Vulkan têm ordem de linha OPOSTA na mesma memória → o blit faz
-  flip Y; o readback de evidência NÃO leva flip extra. wgpu acessado via `slint::wgpu_28::wgpu` (sem
-  dep separada). `ash` casa a versão do wgpu-hal (0.38.x). O device automático do Slint já habilita
-  `VK_KHR_external_memory_fd`. Ler a fonte do cache do cargo é o que de-riscou o interop.
-- **L-004 (M1):** init do contexto do Servo é LAZY (fora do setup do renderer); `show()`+`focus()`;
-  no M3 o device wgpu é capturado no notifier mas SÓ clonado (nenhuma op GL ali).
-- **Resize (ADR-0004):** só o offscreen via `webview.resize`; a ponte GPU é recriada no novo tamanho
-  (guarda de tamanho no `pump_frame_gpu`).
-- Rodar: `cargo run -p basedbrowser` (precisa de display; renderer Vulkan/wgpu). Benchmark:
-  `BASEDBROWSER_BENCH=1 cargo run -p basedbrowser --release`. Evidência:
-  `BASEDBROWSER_DUMP_FRAME=/tmp/x.png` (salva fonte + `.gpu.png` da textura compartilhada).
-  Captura de **janela** automatizada segue bloqueada no GNOME 46/Wayland.
-- **1ª build com features wgpu é cara** (compila wgpu/naga/ash; release recompila o motor inteiro).
-- Decisões: STATE AD-001..009 · Lições: L-001..006 · ADRs: 0001..0006.
+- Branch: `main` (pushado p/ github.com/VicenzoMF/based-browser). Idioma: **pt-BR**. Plan Mode antes de executar.
+- **M4 (ADR-0007 / AD-010 / L-007):** offscreen-por-aba (FBO próprio) compartilha o contexto surfman do
+  pai → a ponte GPU do M3 só troca a origem do blit (FBO da ativa). Anti-reentrância: o delegate só faz
+  borrow IMUTÁVEL do `manager` (via `Weak`, sem ciclo) + escreve `Cell`s + marca `chrome_dirty`; o LOOP
+  escreve no Slint. `window.open` adia o registro da aba (fila `pending_new`). Persistência atômica e
+  tolerante a falha. Chrome inline-re-export (NÃO build.rs) p/ não quebrar o gate de lint.
+- **Drivers de evidência** (in-app, gated por env): `BASEDBROWSER_TAB_TEST` (abre/troca/fecha via
+  `invoke_*`), `BASEDBROWSER_BOOKMARK_TEST`, `BASEDBROWSER_HISTORY_TEST`, `BASEDBROWSER_EXIT_AFTER_MS`
+  (exit limpo → roda o save-on-exit), `BASEDBROWSER_DUMP_FRAME` (fonte + `.gpu.png` da aba ativa).
+- Rodar: `cargo run -p basedbrowser` (precisa de display; renderer Vulkan/wgpu). Config em
+  `~/.config/basedbrowser/{bookmarks,history,session}.json`.
+- Decisões: STATE AD-001..010 · Lições: L-001..007 · ADRs: 0001..0007.

@@ -24,8 +24,11 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
-Marco **M3 ✅** — render GPU zero-copy: `crates/basedbrowser/src/gpu_bridge.rs` faz texture sharing
-via memória externa Vulkan↔GL (renderer `femtovg-wgpu`), eliminando a cópia-CPU por frame
-(`read_to_image` saiu do caminho quente). Benchmark: pump −40% (5,4→3,1 ms). Sobre o input/chrome/
-resize do M2 (ADR-0004, AD-008) e o pipeline do M1. Decisões em **ADR-0005/0006, AD-009, L-006**.
-Próximo: **M4** (recursos: multi-aba, histórico, favoritos). Harness **H1** ok.
+Marco **M4 ✅** — recursos de navegador: **multi-aba** (`src/main.rs` `TabManager`/`Tab`: N `WebView`s/
+1 `Servo`, cada aba com seu `OffscreenRenderingContext`; só a ATIVA é pintada/blitada → **reusa a ponte
+GPU zero-copy do M3** trocando a origem do blit; abas de fundo throttled). **Histórico** + **favoritos**
++ **restauração de sessão** persistidos em JSON (`src/persist.rs`: `serde`/`serde_json`/`dirs`,
+`~/.config/basedbrowser/`). UI em **`ui/app.slint`** (re-export inline, SEM `build.rs` — o gate de lint
+proíbe o `include_modules!()`; ver L-007). `window.open` via fila diferida. Decisões em **ADR-0007,
+AD-010, L-007**. Sobre o M3 (ADR-0005/0006), M2 (ADR-0004/AD-008) e M1 (ADR-0003). Próximo: **M5** (a
+definir). Harness **H1** ok.
