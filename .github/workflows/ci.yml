@@ -1,0 +1,99 @@
+# CI do BasedBrowser — valida o GATE na revisão fixada do Servo (ADR-0002: servo =0.2.0, toolchain
+# 1.92.0). Espelha o gate local (lefthook): archgate + fmt + clippy -D warnings + test. É o mecanismo
+# do Goal #3 / L-001 (HARNESS-ROADMAP H3): um bump do pin que quebre o build/lints/testes falha ALTO
+# aqui, em vez de silenciosamente entre máquinas. Decisão de escopo/segurança: docs/adr/0011.
+#
+# Viabilidade (pesquisa M8): o build completo do Servo cabe num runner GitHub-hosted free de repo
+# público (o PRÓPRIO CI do Servo roda assim) — 4 vCPU / 16 GB RAM / ~45 GB após free-disk-space;
+# teto de 6h/job. Headless por natureza (L-008): NÃO abre janela; os scripts/m{5,6,7} (headful/GPU)
+# rodam localmente no runbook, não aqui.
+#
+# Supply-chain (L-002): actions de terceiros PINADAS POR COMMIT SHA, de fontes reputáveis.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancela runs obsoletos do mesmo ref (economiza minutos; build do Servo é caro).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate (archgate + fmt + clippy + test) — Servo 0.2.0 / Rust 1.92.0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # Libera ~31 GB removendo SDKs pré-instalados (Android/.NET/Haskell/etc.) — o build do Servo +
+      # mozjs não cabe nos 14 GB de fábrica. tool-cache=false: preserva toolchains (a 1.92.0 vem
+      # depois via setup-rust-toolchain). Mesma técnica do CI do próprio Servo.
+      - name: Liberar disco
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # Archgate ANTES do build pesado: divergência de pin/toolchain/ADR falha em segundos.
+      - name: Archgate (pin / toolchain / ADR — erro-como-instrução)
+        run: scripts/checks/archgate.sh
+
+      # Deps de sistema do Servo (book.servo.org/building/linux.html). Loop resiliente: só instala o que
+      # a imagem oferece (nomes mesa-dev mudam entre 22.04/24.04 — inclui as duas formas) e LOGA o que
+      # pular, em vez de falhar por um nome transitório ausente.
+      - name: Deps de sistema do Servo (apt)
+        run: |
+          sudo apt-get update
+          PKGS="build-essential ca-certificates ccache clang cmake curl g++ git gperf \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly gstreamer1.0-tools \
+            libdbus-1-dev libegl1-mesa-dev libegl-dev libfreetype6-dev libges-1.0-dev \
+            libgl1-mesa-dri libgl-dev libgles2-mesa-dev libgles-dev libglib2.0-dev \
+            libgstreamer-plugins-bad1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-good1.0-dev libgstrtspserver-1.0-dev libharfbuzz-dev \
+            liblzma-dev libudev-dev libunwind-dev libvulkan1 libvulkan-dev libx11-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-x11-0 \
+            libxkbcommon0 libxmu-dev libxmu6 llvm-dev m4 xorg-dev"
+          AVAIL=""; SKIP=""
+          for p in $PKGS; do
+            if apt-cache show "$p" >/dev/null 2>&1; then AVAIL="$AVAIL $p"; else SKIP="$SKIP $p"; fi
+          done
+          [ -n "$SKIP" ] && echo "::notice title=apt::pacotes indisponíveis nesta imagem (ignorados):$SKIP"
+          sudo apt-get install -y --no-install-recommends $AVAIL
+
+      # Sem 'toolchain:' -> instala EXATAMENTE o channel do rust-toolchain.toml (1.92.0). Já embute
+      # Swatinem/rust-cache (cacheia Servo+mozjs compilados = o caro). Cache keyed pelo Cargo.lock.
+      - name: Toolchain Rust (rust-toolchain.toml = 1.92.0) + cache
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          components: rustfmt, clippy
+          cache: true
+          # IMPORTANTE: a action seta RUSTFLAGS=-D warnings por padrão, o que aplicaria a TODAS as
+          # deps — um warning do Servo/mozjs (que NÃO controlamos) quebraria o build. Neutralizamos:
+          # o gate de lint vem do nosso clippy explícito (-- -D warnings), que só linta nossos crates.
+          rustflags: ""
+
+      # fmt é instantâneo: falha antes do build pesado do clippy/test.
+      - name: Format (cargo fmt --check)
+        run: cargo fmt --all --check
+
+      # Espelha o gate local: basedbrowser (produto) coberto; servo-poc (PoC descartável) excluído.
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --exclude servo-poc --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --exclude servo-poc
