@@ -75,6 +75,14 @@ impl AppData {
         }
         save_history(&self.history);
     }
+
+    /// Limpa o histórico de navegação (memória + disco), gravando uma lista vazia (atômico). Parte do
+    /// "limpar dados de navegação" do M6 (ADR-0009). Favoritos e sessão de abas NÃO são afetados —
+    /// são curadoria do usuário, preservados por convenção de browser.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        save_history(&self.history);
+    }
 }
 
 /// Diretório de config do app (`~/.config/basedbrowser/`). `None` se a plataforma não expõe um.

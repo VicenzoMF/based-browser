@@ -70,6 +70,9 @@ export component MainWindow inherits Window {
     callback open-history(int);
     callback url-edited(string);
     callback open-suggestion(int);
+    // M6: limpar dados de navegação (cookies + Web Storage do Servo + nosso histórico; preserva
+    // favoritos e a sessão de abas).
+    callback clear-browsing-data();
     // Input -> Rust. pointer: (x, y, kind, button); kind 0=down 1=up 2=move; button 0=left
     // 1=right 2=middle 3=outro. scroll: (x, y, delta-x, delta-y). key: (text, pressed, ctrl,
     // shift, alt, meta, repeat). web-resized: novo tamanho FÍSICO da área web.
@@ -183,6 +186,11 @@ export component MainWindow inherits Window {
                     root.history-open = !root.history-open;
                     root.toggle-history();
                 }
+            }
+            // M6: limpa dados de navegação (cookies + Web Storage + histórico; favoritos preservados).
+            Button {
+                text: "Limpar dados";
+                clicked => { root.clear-browsing-data(); }
             }
             if root.loading : Text {
                 vertical-alignment: center;

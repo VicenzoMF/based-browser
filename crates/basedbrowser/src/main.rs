@@ -30,7 +30,7 @@ use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
     CookieSource, CreateNewWebViewRequest, DeviceIntRect, EventLoopWaker, LoadStatus,
-    OffscreenRenderingContext, Opts, RenderingContext, Servo, ServoBuilder, WebView,
+    OffscreenRenderingContext, Opts, RenderingContext, Servo, ServoBuilder, StorageType, WebView,
     WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
@@ -1006,6 +1006,14 @@ fn setup_history(
         mdl.set_vec(filtered_history(&dat.borrow(), query.as_str(), 200));
     });
 
+    // M6 (ADR-0009): limpar DADOS DE NAVEGAÇÃO — cookies + Web Storage do Servo + nosso histórico.
+    // PRESERVA favoritos e a sessão de abas. Reflete na UI esvaziando o painel de histórico.
+    let (mgr, dat, mdl) = (manager.clone(), data.clone(), history_model.clone());
+    app.on_clear_browsing_data(move || {
+        clear_browsing_data(&mgr, &dat);
+        mdl.set_vec(filtered_history(&dat.borrow(), "", 200));
+    });
+
     // Autocomplete: até 6 sugestões; texto vazio limpa.
     let (dat, mdl) = (data.clone(), suggestions_model.clone());
     app.on_url_edited(move |text| {
@@ -1049,6 +1057,42 @@ fn setup_history(
 fn row_url(model: &slint::ModelRc<HistoryItem>, index: i32) -> Option<String> {
     let idx = usize::try_from(index).ok()?;
     model.row_data(idx).map(|item| item.url.to_string())
+}
+
+/// M6 (ADR-0009): limpa os DADOS DE NAVEGAÇÃO — cookies + `localStorage`/`sessionStorage` do Servo
+/// (via [`SiteDataManager`]) e o nosso histórico. **PRESERVA** favoritos e a sessão de abas (curadoria
+/// do usuário; convenção de browser).
+///
+/// Roda num callback de UI (FORA do `spin_event_loop`) → faz só borrow IMUTÁVEL do `manager` p/ pegar
+/// `&servo` (respeita o invariante anti-reentrância do ADR-0007). Os métodos do `SiteDataManager` são
+/// síncronos/bloqueantes — aceitável p/ uma ação pontual do usuário.
+///
+/// `clear_cookies()` apaga TODOS os cookies (domain-independent). Para Web Storage, `clear_site_data`
+/// é escopado por SITE (eTLD+1): enumeramos `site_data()` e passamos os nomes. Sites sem domínio
+/// registrado (`localhost`/IPs, uso de dev) não são listados nem limpos por aqui — caveat registrado
+/// no ADR-0009; em domínios reais limpa normalmente.
+fn clear_browsing_data(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+) {
+    if let Some(m) = manager.borrow().as_ref() {
+        let sdm = m.servo.site_data_manager();
+        sdm.clear_cookies();
+        let storage = StorageType::Local | StorageType::Session;
+        let sites: Vec<String> = sdm
+            .site_data(storage)
+            .into_iter()
+            .map(|s| s.name())
+            .collect();
+        let refs: Vec<&str> = sites.iter().map(String::as_str).collect();
+        sdm.clear_site_data(&refs, storage);
+        eprintln!(
+            "[m6] limpou cookies + Web Storage de {} site(s)",
+            refs.len()
+        );
+    }
+    data.borrow_mut().clear_history();
+    eprintln!("[m6] limpou o histórico (favoritos e sessão preservados)");
 }
 
 /// Cria a barra de favoritos: model populado dos favoritos carregados + callbacks.
@@ -1379,7 +1423,7 @@ fn main() -> Result<(), slint::PlatformError> {
     setup_history(&app, &manager, &app_data);
 
     // Drivers de evidência (no-op sem as envs respectivas); manter os timers vivos.
-    let _drivers = install_evidence_drivers(&app, &manager);
+    let _drivers = install_evidence_drivers(&app, &manager, &app_data);
 
     // Dirige o Servo e bombeia frames. O manager é montado LAZY aqui (e não no
     // `set_rendering_notifier`) para criar o contexto GL do Servo FORA do setup do renderer do
@@ -1557,16 +1601,87 @@ fn install_tab_test(app: &MainWindow, manager: &Rc<RefCell<Option<TabManager>>>)
 fn install_evidence_drivers(
     app: &MainWindow,
     manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
 ) -> Vec<Timer> {
     [
         install_tab_test(app, manager),
         install_bookmark_test(app),
         install_history_test(app),
         install_persist_test(manager),
+        install_clear_test(app, manager, data),
     ]
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// Driver de evidência do "limpar dados" (`BASEDBROWSER_CLEAR_TEST=1`, M6/ADR-0009): após a página de
+/// teste setar cookie+localStorage e registrar uma visita, loga o estado ANTES, invoca
+/// `clear-browsing-data` e loga DEPOIS — provando que cookies zeram e o histórico esvazia, com os
+/// favoritos preservados. Sem captura de janela (L-008). Mantenha o `Timer`.
+fn install_clear_test(
+    app: &MainWindow,
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+) -> Option<Timer> {
+    std::env::var_os("BASEDBROWSER_CLEAR_TEST")?;
+    let timer = Timer::default();
+    let weak = app.as_weak();
+    let mgr = manager.clone();
+    let dat = data.clone();
+    let step = Cell::new(0u32);
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(1000),
+        move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            match step.replace(step.get() + 1) {
+                3 => {
+                    // Favorita a página atual p/ provar que o "limpar" PRESERVA favoritos.
+                    app.invoke_add_bookmark();
+                    eprintln!("[cleartest] add-bookmark (favorito a preservar)");
+                }
+                4 => log_clear_state(&mgr, &dat, "antes"),
+                5 => {
+                    app.invoke_clear_browsing_data();
+                    eprintln!("[cleartest] clear-browsing-data invocado");
+                }
+                6 => log_clear_state(&mgr, &dat, "depois"),
+                _ => {}
+            }
+        },
+    );
+    Some(timer)
+}
+
+/// Loga (TEXTO) o estado de dados p/ o [`install_clear_test`]: nº de cookies da aba ativa + nº de
+/// sites com Web Storage + nº de entradas de histórico + nº de favoritos (estes preservados).
+fn log_clear_state(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    data: &Rc<RefCell<persist::AppData>>,
+    phase: &str,
+) {
+    let guard = manager.borrow();
+    let Some(m) = guard.as_ref() else {
+        return;
+    };
+    let sdm = m.servo.site_data_manager();
+    let storage_sites = sdm.site_data(StorageType::all()).len();
+    let cookies = m
+        .active_tab()
+        .and_then(|tab| tab.webview.url().map(|u| u.to_string()))
+        .and_then(|s| Url::parse(&s).ok())
+        .map_or(0, |url| {
+            sdm.cookies_for_url(url, CookieSource::NonHTTP).len()
+        });
+    let d = data.borrow();
+    eprintln!(
+        "[cleartest] {phase}: cookies(aba)={cookies} storage_sites={storage_sites} history={} bookmarks={}",
+        d.history.len(),
+        d.bookmarks.len()
+    );
 }
 
 /// Driver de evidência da persistência (`BASEDBROWSER_PERSIST_TEST=1`, M6/ADR-0009): sem captura de
