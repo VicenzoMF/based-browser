@@ -30,9 +30,9 @@ use euclid::Scale;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use servo::{
     AllowOrDenyRequest, ConsoleLogLevel, CookieSource, CreateNewWebViewRequest, DeviceIntRect,
-    EventLoopWaker, LoadStatus, OffscreenRenderingContext, Opts, Preferences, RenderingContext,
-    Servo, ServoBuilder, ServoDelegate, ServoError, StorageType, WebView, WebViewBuilder,
-    WebViewDelegate, WebViewId, WindowRenderingContext,
+    EventLoopWaker, JSValue, LoadStatus, OffscreenRenderingContext, Opts, Preferences,
+    RenderingContext, Servo, ServoBuilder, ServoDelegate, ServoError, StorageType, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use slint::wgpu_28::wgpu;
 use slint::{
@@ -354,6 +354,67 @@ fn console_level_str(level: &ConsoleLogLevel) -> &'static str {
         ConsoleLogLevel::Error => "error",
         ConsoleLogLevel::Trace => "trace",
     }
+}
+
+/// M7 (ADR-0010): formata o resultado de um `evaluate_javascript` (`JSValue`) p/ uma linha de texto do
+/// console in-app. Referências de DOM (Element/Frame/Window/ShadowRoot) viram o id opaco que o Servo dá
+/// (inspeção via `outerHTML` etc. no próprio eval). Recursivo p/ Array/Object.
+fn format_jsvalue(value: &JSValue) -> String {
+    match value {
+        JSValue::Undefined => "undefined".to_string(),
+        JSValue::Null => "null".to_string(),
+        JSValue::Boolean(b) => b.to_string(),
+        JSValue::Number(n) => n.to_string(),
+        JSValue::String(s) => s.clone(),
+        JSValue::Element(s) | JSValue::ShadowRoot(s) | JSValue::Frame(s) | JSValue::Window(s) => {
+            s.clone()
+        }
+        JSValue::Array(items) => {
+            let parts: Vec<String> = items.iter().map(format_jsvalue).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        JSValue::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_jsvalue(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+    }
+}
+
+/// M7 (ADR-0010): roda `script` na ABA ATIVA via `WebView::evaluate_javascript` (in-process) e empurra
+/// a entrada + o resultado no buffer de console (níveis `eval`/`result`/`erro`). O callback é
+/// ASSÍNCRONO (dispara num spin posterior, quando o JS termina): captura um clone do `DevtoolsState` e
+/// só mexe nele + `dirty` — NUNCA escreve no Slint (invariante anti-reentrância do ADR-0007).
+fn devtools_eval(
+    manager: &Rc<RefCell<Option<TabManager>>>,
+    devtools: &Rc<DevtoolsState>,
+    script: String,
+) {
+    devtools.console.borrow_mut().push(ConsoleLine {
+        level: "eval",
+        text: script.clone(),
+    });
+    devtools.dirty.set(true);
+    let dt = devtools.clone();
+    with_active_webview(manager, move |wv| {
+        wv.evaluate_javascript(script, move |res| {
+            let (level, text) = match res {
+                Ok(value) => ("result", format_jsvalue(&value)),
+                Err(err) => ("erro", format!("{err:?}")),
+            };
+            {
+                let mut buf = dt.console.borrow_mut();
+                buf.push(ConsoleLine { level, text });
+                let len = buf.len();
+                if len > DEVTOOLS_CONSOLE_CAP {
+                    buf.drain(0..len - DEVTOOLS_CONSOLE_CAP);
+                }
+            }
+            dt.dirty.set(true);
+        });
+    });
 }
 
 /// `ServoDelegate` (M7, ADR-0010): hooks de NÍVEL-SERVO (não por-`WebView`). Usado SÓ para o servidor
@@ -1755,28 +1816,46 @@ fn install_evidence_drivers(
 /// registros de rede capturados pelo cliente RDP (T4). Etapas escalonadas em ticks de 1 s. No-op sem a
 /// env. Mantenha o `Timer`. A página/subrecurso vêm de `scripts/m7/` (T6).
 fn install_devtools_test(
-    _manager: &Rc<RefCell<Option<TabManager>>>,
+    manager: &Rc<RefCell<Option<TabManager>>>,
     sink: &Rc<Embedder>,
 ) -> Option<Timer> {
     std::env::var_os("BASEDBROWSER_DEVTOOLS_TEST")?;
     let timer = Timer::default();
+    let mgr = manager.clone();
     let devtools = sink.devtools.clone();
     let step = Cell::new(0u32);
     timer.start(
         TimerMode::Repeated,
         Duration::from_millis(1000),
         move || {
-            if step.get() == 5 {
-                let buf = devtools.console.borrow();
-                eprintln!("[devtoolstest] console: {} linha(s)", buf.len());
-                for line in buf.iter() {
-                    eprintln!("[devtoolstest] console[{}] {}", line.level, line.text);
+            let n = step.get();
+            step.set(n + 1);
+            match n {
+                5 => dump_devtools_console(&devtools, "console"),
+                6 => {
+                    devtools_eval(&mgr, &devtools, "2 + 2".to_string());
+                    eprintln!("[devtoolstest] eval enviado: 2 + 2");
                 }
+                7 => {
+                    devtools_eval(&mgr, &devtools, "document.title".to_string());
+                    eprintln!("[devtoolstest] eval enviado: document.title");
+                }
+                9 => dump_devtools_console(&devtools, "console pós-eval"),
+                _ => {}
             }
-            step.set(step.get() + 1);
         },
     );
     Some(timer)
+}
+
+/// Dumpa (TEXTO, L-008) o buffer de console in-app p/ o driver do M7 — prova console.log capturado (T2)
+/// e os resultados de eval (T3).
+fn dump_devtools_console(devtools: &Rc<DevtoolsState>, label: &str) {
+    let buf = devtools.console.borrow();
+    eprintln!("[devtoolstest] {label}: {} linha(s)", buf.len());
+    for line in buf.iter() {
+        eprintln!("[devtoolstest] console[{}] {}", line.level, line.text);
+    }
 }
 
 /// Driver de evidência do "limpar dados" (`BASEDBROWSER_CLEAR_TEST=1`, M6/ADR-0009): após a página de
