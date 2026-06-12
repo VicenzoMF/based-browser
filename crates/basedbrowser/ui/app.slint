@@ -46,8 +46,17 @@ export struct DevNetRow {
     url: string,
     name: string,
     status: string,
+    // M10: classe do status p/ colorir (2/3/4/5 = centena; 1 = outro; 0 = pendente).
+    status-class: int,
+    // M10: rótulo do tipo do recurso (xhr/doc/js/css/img/fonte/outro — do cause.type do RDP).
+    kind-label: string,
     mime: string,
+    // M10: tamanho e tempo humanizados ("1.2 kB", "120 ms"); vazios se ignotos.
+    size: string,
+    time: string,
     req-headers: string,
+    // M10: payload da request (getRequestPostData), JSON indentado quando aplicável.
+    req-body: string,
     resp-headers: string,
     body: string,
 }
@@ -297,6 +306,33 @@ component DevToolBtn inherits Rectangle {
     }
 }
 
+// M10: chip de filtro por tipo de recurso (painel de rede) — pílula compacta; ativa em accent.
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+    height: 22px;
+    border-radius: 11px;
+    background: root.active ? Theme.accent-soft : (touch.has-hover ? Theme.bg-elevated : Theme.bg-surface-2);
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    animate background { duration: 90ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        Text {
+            text: root.label;
+            font-size: 11px;
+            color: root.active ? Theme.accent : Theme.text-mid;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // Chrome do M2/M4/M7 repaginado no M9: barra de abas + toolbar (omnibox) + favoritos + área web.
 // O `.slint` apenas DECODIFICA cada evento para primitivos e chama um callback; a tradução
 // primitivo -> `InputEvent` do Servo mora no Rust (`input.rs`). Coordenadas: declarar os params como
@@ -379,6 +415,9 @@ export component MainWindow inherits Window {
     callback clear-devtools();
     // M10: filtro do painel de rede (URL/método/status/nome).
     callback search-devtools(string);
+    // M10: filtro por TIPO de recurso na rede (chips; índice de net_kind no Rust; 0 = todos).
+    in-out property <int> dev-net-kind: 0;
+    callback filter-net-kind(int);
     // M10 (T5): persiste tamanho/orientação do dock (chamado no fim do arrasto do divisor e no toggle).
     callback persist-dock();
     // M9: zoom de página (Ctrl +/−/0 e o menu ⋯).
@@ -1060,7 +1099,7 @@ export component MainWindow inherits Window {
                     }
                     moved => {
                         if (root.dock-right) {
-                            root.devtools-size = clamp(root.devtools-size + (self.grab - self.mouse-x), 300px, content.width - 360px);
+                            root.devtools-size = clamp(root.devtools-size + (self.grab - self.mouse-x), 360px, content.width - 360px);
                         } else {
                             root.devtools-size = clamp(root.devtools-size + (self.grab - self.mouse-y), 160px, content.height - 160px);
                         }
@@ -1218,6 +1257,20 @@ export component MainWindow inherits Window {
                             placeholder: "Filtrar (URL, método, status)…";
                             edited(t) => { root.search-devtools(t); }
                         }
+                        // Chips de TIPO (M10): separa as requests "de verdade" (XHR/fetch) do ruído
+                        // (imagens, fontes, css...). Índices casam com net_kind no Rust.
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for chip[idx] in ["Tudo", "XHR", "Doc", "JS", "CSS", "Img", "Fonte", "Outros"] : Chip {
+                                label: chip;
+                                active: root.dev-net-kind == idx;
+                                clicked => {
+                                    root.dev-net-kind = idx;
+                                    root.filter-net-kind(idx);
+                                }
+                            }
+                        }
                         // Cabeçalho de colunas (espelha a lista abaixo).
                         HorizontalLayout {
                             padding-left: 8px;
@@ -1245,7 +1298,14 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: "Tipo";
-                                width: 70px;
+                                width: 48px;
+                                font-size: 11px;
+                                color: Theme.text-lo;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Tamanho";
+                                width: 64px;
                                 font-size: 11px;
                                 color: Theme.text-lo;
                                 vertical-alignment: center;
@@ -1271,12 +1331,17 @@ export component MainWindow inherits Window {
                                         color: #9ab8ff;
                                         vertical-alignment: center;
                                     }
+                                    // Status colorido por classe: 2xx ok, 3xx âmbar, 4xx/5xx erro.
                                     Text {
                                         text: n.status == "" ? "…" : n.status;
                                         width: 64px;
                                         font-family: "monospace";
                                         font-size: 12px;
-                                        color: Theme.ok;
+                                        color: n.status-class == 2 ? Theme.ok
+                                            : n.status-class == 3 ? #ffd47a
+                                            : n.status-class >= 4 ? Theme.danger
+                                            : Theme.text-mid;
+                                        overflow: elide;
                                         vertical-alignment: center;
                                     }
                                     Text {
@@ -1289,8 +1354,17 @@ export component MainWindow inherits Window {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: n.mime;
-                                        width: 70px;
+                                        text: n.kind-label;
+                                        width: 48px;
+                                        font-family: "monospace";
+                                        font-size: 12px;
+                                        color: n.kind-label == "xhr" ? Theme.accent : Theme.text-mid;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.size;
+                                        width: 64px;
                                         font-family: "monospace";
                                         font-size: 12px;
                                         color: Theme.text-mid;
@@ -1311,9 +1385,16 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "Status: " + (root.dev-net[root.dev-net-sel].status == "" ? "…" : root.dev-net[root.dev-net-sel].status) + " · Tipo: " + root.dev-net[root.dev-net-sel].mime;
+                                text: "Status: " + (root.dev-net[root.dev-net-sel].status == "" ? "pendente" : root.dev-net[root.dev-net-sel].status)
+                                    + " · " + root.dev-net[root.dev-net-sel].kind-label
+                                    + (root.dev-net[root.dev-net-sel].mime == "" ? "" : " · " + root.dev-net[root.dev-net-sel].mime)
+                                    + (root.dev-net[root.dev-net-sel].size == "" ? "" : " · " + root.dev-net[root.dev-net-sel].size)
+                                    + (root.dev-net[root.dev-net-sel].time == "" ? "" : " · " + root.dev-net[root.dev-net-sel].time);
+                                font-family: "monospace";
                                 font-size: 12px;
-                                color: Theme.text-mid;
+                                color: root.dev-net[root.dev-net-sel].status-class == 2 ? Theme.ok
+                                    : root.dev-net[root.dev-net-sel].status-class >= 4 ? Theme.danger
+                                    : Theme.text-mid;
                             }
                             HorizontalLayout {
                                 spacing: 6px;
@@ -1348,6 +1429,18 @@ export component MainWindow inherits Window {
                                             font-family: "monospace";
                                             font-size: 12px;
                                             color: Theme.text-hi;
+                                            wrap: word-wrap;
+                                        }
+                                        Text {
+                                            text: "— Payload —";
+                                            font-size: 12px;
+                                            color: Theme.text-mid;
+                                        }
+                                        Text {
+                                            text: root.dev-net[root.dev-net-sel].req-body == "" ? "(sem payload)" : root.dev-net[root.dev-net-sel].req-body;
+                                            font-family: "monospace";
+                                            font-size: 12px;
+                                            color: root.dev-net[root.dev-net-sel].req-body == "" ? Theme.text-lo : Theme.text-hi;
                                             wrap: word-wrap;
                                         }
                                     }

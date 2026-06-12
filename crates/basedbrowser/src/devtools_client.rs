@@ -40,10 +40,20 @@ pub struct NetRecord {
     /// `"200 OK"` quando a resposta chega; vazio enquanto pendente.
     pub status: String,
     pub mime: String,
+    /// M10: tipo do recurso (`cause.type` do fetch spec: document/script/style/image/font/fetch/...).
+    pub cause: String,
+    /// M10: a request veio de `XMLHttpRequest` (flag `isXHR` do evento).
+    pub is_xhr: bool,
     pub req_headers: Vec<(String, String)>,
+    /// M10: payload da request (`getRequestPostData`), truncado em [`BODY_CAP`]; vazio se não há.
+    pub req_body: String,
     pub resp_headers: Vec<(String, String)>,
     /// Corpo da resposta (texto), truncado em [`BODY_CAP`].
     pub resp_body: String,
+    /// M10: tamanho do corpo da resposta em bytes (`content.bodySize`/`transferredSize`); 0 = ignoto.
+    pub size: u64,
+    /// M10: tempo total da requisição em ms (`getEventTimings.totalTime`); 0 = ignoto.
+    pub time_ms: f64,
 }
 
 /// Teto do corpo de resposta guardado/exibido (evita estourar memória num download grande).
@@ -213,6 +223,20 @@ impl NetClient {
         if let Some(u) = item.get("url").and_then(Value::as_str) {
             u.clone_into(&mut rec.url);
         }
+        // M10: tipo do recurso (Destination do fetch spec) — base do filtro por tipo do painel.
+        // `cause` pode vir como objeto `{type: "..."}` ou string direta; aceitamos os dois.
+        if let Some(cause) = item.get("cause") {
+            let typ = cause
+                .get("type")
+                .and_then(Value::as_str)
+                .or_else(|| cause.as_str());
+            if let Some(typ) = typ {
+                typ.clone_into(&mut rec.cause);
+            }
+        }
+        if let Some(xhr) = item.get("isXHR").and_then(Value::as_bool) {
+            rec.is_xhr = xhr;
+        }
         if let Some(actor) = item.get("actor").and_then(Value::as_str) {
             self.id_by_actor.insert(actor.to_owned(), id);
             self.actor_by_id.insert(id, actor.to_owned());
@@ -251,6 +275,25 @@ impl NetClient {
                 mime.clone_into(&mut rec.mime);
             }
             rec.resp_body = truncate(&value_to_text(content.get("text")));
+            // M10: tamanho da resposta (bodySize; fallback transferredSize do Content-Length).
+            rec.size = content
+                .get("bodySize")
+                .and_then(Value::as_u64)
+                .filter(|&n| n > 0)
+                .or_else(|| packet.get("transferredSize").and_then(Value::as_u64))
+                .or_else(|| content.get("transferredSize").and_then(Value::as_u64))
+                .unwrap_or(0);
+        } else if let Some(post) = packet.get("postData") {
+            // M10: payload da request — pode vir como objeto `{text}`, string direta ou null.
+            let text = post
+                .get("text")
+                .map_or_else(|| value_to_text(Some(post)), |t| value_to_text(Some(t)));
+            if !text.is_empty() && text != "null" {
+                rec.req_body = truncate(&text);
+            }
+        } else if let Some(total) = packet.get("totalTime").and_then(Value::as_f64) {
+            // M10: timings (getEventTimings) — guardamos o tempo total em ms.
+            rec.time_ms = total;
         } else if let Some(headers) = packet.get("headers").and_then(Value::as_array) {
             let parsed = parse_headers(headers);
             // 1º reply de headers do ator = request; 2º = response (pedimos nessa ordem).
@@ -272,8 +315,9 @@ impl NetClient {
     }
 }
 
-/// Pede os detalhes (headers de request/response + corpo) de um `NetworkEventActor`. A ordem importa:
-/// request-headers antes de response-headers (ver `header_phase`).
+/// Pede os detalhes de um `NetworkEventActor`: headers de request/response, corpo da resposta,
+/// payload da request (M10) e timings (M10). A ordem importa SÓ para os dois replies de `headers`
+/// (ver `header_phase`); os demais são discriminados pela chave (`content`/`postData`/`totalTime`).
 fn request_details<W: Write>(writer: &mut W, actor: &str) -> io::Result<()> {
     write_packet(writer, &json!({ "to": actor, "type": "getRequestHeaders" }))?;
     write_packet(
@@ -284,6 +328,11 @@ fn request_details<W: Write>(writer: &mut W, actor: &str) -> io::Result<()> {
         writer,
         &json!({ "to": actor, "type": "getResponseContent" }),
     )?;
+    write_packet(
+        writer,
+        &json!({ "to": actor, "type": "getRequestPostData" }),
+    )?;
+    write_packet(writer, &json!({ "to": actor, "type": "getEventTimings" }))?;
     Ok(())
 }
 

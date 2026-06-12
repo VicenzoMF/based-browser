@@ -192,6 +192,9 @@ struct DevtoolsState {
     /// M10: filtro de texto do painel de rede (substring, case-insensitive sobre url/método/status/nome).
     /// Escrito pelo callback `on_search_devtools`; aplicado em [`rebuild_dev_models`].
     filter: RefCell<String>,
+    /// M10: filtro por TIPO de recurso (chips do painel — índice de [`net_kind`]; 0 = todos). Separa
+    /// as requests "de verdade" (fetch/XHR) do ruído (imagens, fontes, css...).
+    kind_filter: Cell<i32>,
     /// Lado-emissor do canal cliente RDP → UI. O delegate o CLONA para a thread do cliente.
     net_tx: Sender<NetRecord>,
     /// Lado-receptor (drenado pelo timer de devtools). `Option` p/ ser `take`-able caso necessário.
@@ -209,6 +212,7 @@ impl DevtoolsState {
             net: RefCell::new(Vec::new()),
             dirty: Cell::new(false),
             filter: RefCell::new(String::new()),
+            kind_filter: Cell::new(0),
             net_tx,
             net_rx: RefCell::new(Some(net_rx)),
             client_spawned: Cell::new(false),
@@ -2345,6 +2349,12 @@ fn setup_devtools(
         *dt.filter.borrow_mut() = q.to_string();
         dt.dirty.set(true);
     });
+    // M10: chips de tipo (XHR/Doc/JS/CSS/Img/Fonte/Outros) — separa as requests "de verdade" do ruído.
+    let dt = devtools.clone();
+    app.on_filter_net_kind(move |kind| {
+        dt.kind_filter.set(kind);
+        dt.dirty.set(true);
+    });
     // M10 (T5): persiste o dock — chamado pelo Slint no FIM do arrasto do divisor e no toggle base/direita.
     let weak_persist = app.as_weak();
     app.on_persist_dock(move || {
@@ -2390,9 +2400,14 @@ fn rebuild_dev_models(
 
     let net = devtools.net.borrow();
     let filter = devtools.filter.borrow().to_lowercase();
+    let kind_wanted = devtools.kind_filter.get();
     let rows: Vec<DevNetRow> = net
         .iter()
         .filter(|r| {
+            // Filtro por TIPO (chips): 0 = todos; senão o kind do recurso tem que casar.
+            if kind_wanted != 0 && net_kind(&r.cause, r.is_xhr) != kind_wanted {
+                return false;
+            }
             if filter.is_empty() {
                 return true;
             }
@@ -2402,15 +2417,24 @@ fn rebuild_dev_models(
                 || r.status.to_lowercase().contains(&filter)
                 || name.contains(&filter)
         })
-        .map(|r| DevNetRow {
-            method: r.method.as_str().into(),
-            url: r.url.as_str().into(),
-            name: net_name(&r.url).into(),
-            status: r.status.as_str().into(),
-            mime: short_mime(r.mime.as_str()).into(),
-            req_headers: join_headers(&r.req_headers).into(),
-            resp_headers: join_headers(&r.resp_headers).into(),
-            body: pretty_body(r.mime.as_str(), r.resp_body.as_str()).into(),
+        .map(|r| {
+            let kind = net_kind(&r.cause, r.is_xhr);
+            DevNetRow {
+                method: r.method.as_str().into(),
+                url: r.url.as_str().into(),
+                name: net_name(&r.url).into(),
+                status: r.status.as_str().into(),
+                status_class: status_class(&r.status),
+                kind_label: kind_label(kind).into(),
+                mime: short_mime(r.mime.as_str()).into(),
+                size: human_size(r.size).into(),
+                time: human_time(r.time_ms).into(),
+                req_headers: join_headers(&r.req_headers).into(),
+                // Payload da request: tenta JSON pretty (POSTs de API geralmente são JSON).
+                req_body: pretty_body("json", r.req_body.as_str()).into(),
+                resp_headers: join_headers(&r.resp_headers).into(),
+                body: pretty_body(r.mime.as_str(), r.resp_body.as_str()).into(),
+            }
         })
         .collect();
     net_model.set_vec(rows);
@@ -2465,6 +2489,83 @@ fn pretty_body(mime: &str, body: &str) -> String {
         }
     }
     body.to_string()
+}
+
+/// M10: classifica um recurso de rede pelos chips do painel, a partir do `cause.type` (Destination do
+/// fetch spec, capturado pelo cliente RDP) + flag `isXHR`. Índices casam com a lista de chips no
+/// `.slint`: 0=Tudo 1=XHR(fetch) 2=Doc 3=JS 4=CSS 5=Img 6=Fonte 7=Outros.
+fn net_kind(cause: &str, is_xhr: bool) -> i32 {
+    if is_xhr {
+        return 1;
+    }
+    match cause {
+        "fetch" | "xhr" | "json" => 1,
+        "document" | "iframe" | "frame" | "embed" | "object" => 2,
+        "script" | "worker" | "sharedworker" | "serviceworker" | "audioworklet"
+        | "paintworklet" => 3,
+        "style" | "stylesheet" | "xslt" => 4,
+        "image" | "img" => 5,
+        "font" => 6,
+        _ => 7,
+    }
+}
+
+/// M10: rótulo curto do tipo (coluna "Tipo" da lista de rede).
+fn kind_label(kind: i32) -> &'static str {
+    match kind {
+        1 => "xhr",
+        2 => "doc",
+        3 => "js",
+        4 => "css",
+        5 => "img",
+        6 => "fonte",
+        _ => "outro",
+    }
+}
+
+/// M10: classe do status HTTP p/ colorir a coluna (2/3/4/5 = dígito da centena; 1 = outro; 0 = pendente).
+fn status_class(status: &str) -> i32 {
+    match status.as_bytes().first() {
+        Some(b'2') => 2,
+        Some(b'3') => 3,
+        Some(b'4') => 4,
+        Some(b'5') => 5,
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+/// M10: humaniza bytes p/ a coluna "Tamanho" (ex.: 340 B / 1.2 kB / 3.4 MB). Vazio se ignoto (0).
+fn human_size(bytes: u64) -> String {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "tamanhos de corpo HTTP << 2^52; exibição com 1 casa decimal"
+    )]
+    fn as_f64(n: u64) -> f64 {
+        n as f64
+    }
+    if bytes == 0 {
+        return String::new();
+    }
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let kb = as_f64(bytes) / 1024.0;
+    if kb < 1024.0 {
+        return format!("{kb:.1} kB");
+    }
+    format!("{:.1} MB", kb / 1024.0)
+}
+
+/// M10: humaniza o tempo total (ms) da requisição. Vazio se ignoto (<= 0).
+fn human_time(ms: f64) -> String {
+    if ms <= 0.0 {
+        return String::new();
+    }
+    if ms < 1000.0 {
+        return format!("{ms:.0} ms");
+    }
+    format!("{:.2} s", ms / 1000.0)
 }
 
 /// Drena o `net_rx` (`try_recv`) → upsert por `id` em `devtools.net`; marca `dirty` se algo mudou.
@@ -2723,7 +2824,55 @@ fn save_session_on_exit(manager: &Rc<RefCell<Option<TabManager>>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_script, parse_find_result, zoom_percent, JSValue};
+    use super::{
+        find_script, human_size, human_time, net_kind, net_name, parse_find_result, pretty_body,
+        status_class, zoom_percent, JSValue,
+    };
+
+    #[test]
+    fn net_kind_separa_xhr_do_ruido() {
+        // M10: o filtro por tipo existe p/ separar as requests "de verdade" (fetch/XHR) de
+        // imagens/fontes/css. isXHR força XHR mesmo com cause genérico.
+        assert_eq!(net_kind("fetch", false), 1);
+        assert_eq!(net_kind("", true), 1);
+        assert_eq!(net_kind("document", false), 2);
+        assert_eq!(net_kind("script", false), 3);
+        assert_eq!(net_kind("style", false), 4);
+        assert_eq!(net_kind("image", false), 5);
+        assert_eq!(net_kind("font", false), 6);
+        assert_eq!(net_kind("desconhecido", false), 7);
+    }
+
+    #[test]
+    fn status_class_pelo_digito_da_centena() {
+        assert_eq!(status_class("200 OK"), 2);
+        assert_eq!(status_class("304 Not Modified"), 3);
+        assert_eq!(status_class("404 Not Found"), 4);
+        assert_eq!(status_class("500 Internal Server Error"), 5);
+        assert_eq!(status_class(""), 0);
+    }
+
+    #[test]
+    fn human_size_e_time_formatam() {
+        assert_eq!(human_size(0), "");
+        assert_eq!(human_size(340), "340 B");
+        assert_eq!(human_size(1536), "1.5 kB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+        assert_eq!(human_time(0.0), "");
+        assert_eq!(human_time(120.4), "120 ms");
+        assert_eq!(human_time(2340.0), "2.34 s");
+    }
+
+    #[test]
+    fn net_name_e_pretty_body() {
+        assert_eq!(net_name("https://api.exemplo.com/v1/users?id=2"), "users");
+        assert_eq!(net_name("https://exemplo.com/"), "exemplo.com");
+        assert_eq!(
+            pretty_body("application/json", "{\"a\":1}"),
+            "{\n  \"a\": 1\n}"
+        );
+        assert_eq!(pretty_body("text/html", "<p>x</p>"), "<p>x</p>");
+    }
 
     #[test]
     fn zoom_percent_rounds_to_inteiro() {
