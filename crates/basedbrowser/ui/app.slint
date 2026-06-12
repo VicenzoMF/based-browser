@@ -71,58 +71,69 @@ global Theme {
 }
 
 // M9: botão em ícone (glifo de texto), com estados enabled/hover/disabled. Reusado em toda a barra
-// (nav ‹ › ⟳, ★, ⋯, +, × das pílulas, controles de zoom/find).
+// (nav ‹ › ⟳, ★, ⋯, +, × das pílulas, controles de zoom/find). O root NÃO fixa height: estica na
+// linha (HorizontalLayout) e o box visível (size×size) é centrado em y → o ícone fica VERTICALMENTE
+// centrado (os layouts do Slint top-alinham filhos de tamanho fixo).
 component IconBtn inherits Rectangle {
     in property <string> glyph;
     in property <bool> enabled: true;
+    in property <length> size: 34px;
     in property <length> glyph-size: 18px;
     in property <color> glyph-color: Theme.text-hi;
     in property <color> hover-bg: Theme.bg-elevated;
     callback clicked();
-    width: 34px;
-    height: 34px;
-    border-radius: Theme.radius-btn;
-    background: root.enabled && touch.has-hover ? root.hover-bg : transparent;
-    animate background { duration: 90ms; }
+    width: root.size;
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    Text {
-        width: 100%;
-        height: 100%;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        text: root.glyph;
-        font-size: root.glyph-size;
-        color: root.enabled ? root.glyph-color : Theme.text-lo;
+    Rectangle {
+        width: root.size;
+        height: root.size;
+        y: (parent.height - self.height) / 2;
+        border-radius: Theme.radius-btn;
+        background: root.enabled && touch.has-hover ? root.hover-bg : transparent;
+        animate background { duration: 90ms; }
+        Text {
+            width: 100%;
+            height: 100%;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            text: root.glyph;
+            font-size: root.glyph-size;
+            color: root.enabled ? root.glyph-color : Theme.text-lo;
+        }
     }
 }
 
-// M9: cadeado da omnibox desenhado (monocromático, respeita o tema) — fechado/ok p/ https,
-// neutro p/ http. Arco (anel) + corpo sólido sobreposto formam o glifo.
+// M9: cadeado da omnibox desenhado (monocromático, respeita o tema) — fechado/ok p/ https, neutro
+// p/ http. O root estica na linha; o glifo 14x14 (arco + corpo) é centrado em y.
 component LockIcon inherits Rectangle {
     in property <bool> secure;
     width: 14px;
-    height: 14px;
     Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: 0;
-        width: 8px;
-        height: 9px;
-        border-radius: 4px;
-        border-width: 1.5px;
-        border-color: root.secure ? Theme.ok : Theme.text-mid;
-        background: transparent;
-    }
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: 5px;
-        width: 11px;
-        height: 9px;
-        border-radius: 2px;
-        background: root.secure ? Theme.ok : Theme.text-mid;
+        width: 14px;
+        height: 14px;
+        y: (parent.height - self.height) / 2;
+        Rectangle {
+            x: 3px;
+            y: 0;
+            width: 8px;
+            height: 9px;
+            border-radius: 4px;
+            border-width: 1.5px;
+            border-color: root.secure ? Theme.ok : Theme.text-mid;
+            background: transparent;
+        }
+        Rectangle {
+            x: 1.5px;
+            y: 5px;
+            width: 11px;
+            height: 9px;
+            border-radius: 2px;
+            background: root.secure ? Theme.ok : Theme.text-mid;
+        }
     }
 }
 
@@ -354,14 +365,18 @@ export component MainWindow inherits Window {
                         // renderiza → o dot aparece; quando o Servo entrega o favicon, ele cobre o dot).
                         Rectangle {
                             width: 15px;
-                            height: 15px;
-                            border-radius: 4px;
-                            background: tab.active ? Theme.accent : Theme.text-lo;
-                            Image {
-                                width: 100%;
-                                height: 100%;
-                                image-fit: contain;
-                                source: tab.icon;
+                            Rectangle {
+                                width: 15px;
+                                height: 15px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 4px;
+                                background: tab.active ? Theme.accent : Theme.text-lo;
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                    source: tab.icon;
+                                }
                             }
                         }
                         Text {
@@ -373,8 +388,7 @@ export component MainWindow inherits Window {
                             text: tab.title == "" ? "Nova aba" : tab.title;
                         }
                         IconBtn {
-                            width: 22px;
-                            height: 22px;
+                            size: 22px;
                             glyph: "×";
                             glyph-size: 16px;
                             glyph-color: Theme.text-mid;
@@ -384,8 +398,7 @@ export component MainWindow inherits Window {
                     }
                 }
                 IconBtn {
-                    width: 30px;
-                    height: 30px;
+                    size: 30px;
                     glyph: "+";
                     glyph-size: 18px;
                     glyph-color: Theme.text-mid;
@@ -460,8 +473,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         IconBtn {
-                            width: 28px;
-                            height: 28px;
+                            size: 28px;
                             glyph: "★";
                             glyph-size: 15px;
                             glyph-color: Theme.accent;
@@ -511,9 +523,13 @@ export component MainWindow inherits Window {
                         spacing: 6px;
                         Rectangle {
                             width: 12px;
-                            height: 12px;
-                            border-radius: 3px;
-                            background: Theme.text-mid;
+                            Rectangle {
+                                width: 12px;
+                                height: 12px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 3px;
+                                background: Theme.text-mid;
+                            }
                         }
                         Text {
                             horizontal-stretch: 1;
@@ -524,8 +540,7 @@ export component MainWindow inherits Window {
                             text: bm.title == "" ? bm.url : bm.title;
                         }
                         IconBtn {
-                            width: 18px;
-                            height: 18px;
+                            size: 18px;
                             glyph: "×";
                             glyph-size: 13px;
                             glyph-color: Theme.text-lo;
@@ -901,24 +916,21 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
                     IconBtn {
-                        width: 28px;
-                        height: 28px;
+                        size: 28px;
                         glyph: "‹";
                         glyph-size: 20px;
                         hover-bg: Theme.bg-surface;
                         clicked => { root.find-in-page(find-input.text, false); }
                     }
                     IconBtn {
-                        width: 28px;
-                        height: 28px;
+                        size: 28px;
                         glyph: "›";
                         glyph-size: 20px;
                         hover-bg: Theme.bg-surface;
                         clicked => { root.find-in-page(find-input.text, true); }
                     }
                     IconBtn {
-                        width: 28px;
-                        height: 28px;
+                        size: 28px;
                         glyph: "×";
                         glyph-size: 16px;
                         glyph-color: Theme.text-mid;
@@ -1074,8 +1086,7 @@ export component MainWindow inherits Window {
                                     horizontal-stretch: 1;
                                 }
                                 IconBtn {
-                                    width: 26px;
-                                    height: 26px;
+                                    size: 26px;
                                     glyph: "−";
                                     glyph-size: 18px;
                                     glyph-color: Theme.text-hi;
@@ -1091,8 +1102,7 @@ export component MainWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 IconBtn {
-                                    width: 26px;
-                                    height: 26px;
+                                    size: 26px;
                                     glyph: "+";
                                     glyph-size: 18px;
                                     glyph-color: Theme.text-hi;
