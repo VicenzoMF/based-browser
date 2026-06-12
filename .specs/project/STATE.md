@@ -1,7 +1,38 @@
 # State
 
-**Last Updated:** 2026-06-11
-**Current Work:** **Marco M8 CONCLUÍDO** ✅ — **Sustentabilidade (Goal #3)**, o ÚLTIMO Goal do PROJECT ainda
+**Last Updated:** 2026-06-12
+**Current Work:** **Marco M9 CONCLUÍDO** ✅ — **redesign da UI (chrome "dark refinado") + UX de navegação**.
+O usuário disse "a UI está horrível": o chrome (botões de texto, glifos soltos, cores ad-hoc) virou
+apresentável SEM regredir função (todos os structs/props/callbacks da ponte Rust↔Slint preservados;
+embedding fino, L-001). **Direção visual aprovada no Pencil** (`designs/based-browser.pen`, mock dark
+refinado) → traduzida p/ Slint. **Visual** (`ui/app.slint`): `global Theme` (tokens: slate `#15151b` +
+acento indigo `#6c5ce7`, cantos 8/6/12) + componentes reutilizáveis (`IconBtn`, `LockIcon` — cadeado
+DESENHADO monocromático, `MenuItem`, `TextBtn`/`SearchField` — substituem `Button`/`LineEdit` do
+std-widgets que destoavam); abas-pílula c/ favicon + título elide + × no hover (ativa elevada + contorno
+accent); **omnibox** = `TextInput` cru num retângulo arredondado c/ cadeado (http/https, `page-secure`
+derivado no Rust) + ★ + placeholder; toolbar em ícones (‹ › ⟳ + ⋯); barra de loading fina; **menu overflow
+`⋯`** que recolhe Histórico/Limpar/DevTools/**Zoom (− NN% +)**/**Find**. Menu, find bar e menu de contexto
+= **overlays dirigidos por `bool`** (mesmo padrão do histórico/devtools — não `PopupWindow`). **UX de
+navegação** (pesquisa NA FONTE do Servo 0.2.0): **zoom** nativo (`WebView::set_page_zoom`/`page_zoom`, clamp
+[0.3,5.0], passo 10%, por-aba; Ctrl +/−/0 + menu); **find-in-page por INJEÇÃO de JS** (`setup_find`:
+TreeWalker via `evaluate_javascript` destaca/navega — o Servo 0.2.0 NÃO expõe busca nativa; callback
+assíncrono NÃO escreve no Slint → `FindState`+`dirty`+Timer, ADR-0007); **favicons**
+(`WebViewDelegate::notify_favicon_changed` → `WebView::favicon()` → `servo::Image`→`slint::Image` à mão,
+swap BGRA→RGBA); **atalhos** (Ctrl+T/W/L/R/Tab/F, Ctrl +/−/0, Esc) interceptados no `on_forward_key` ANTES
+do repasse ao Servo (roubam a tecla da página; reusam `invoke_*`; Ctrl+L foca a omnibox via callback
+`focus-url-bar` tratado no próprio Slint; Tab/Esc via `input::is_tab`/`is_escape`); **menu de contexto** no
+right-click (intercepta no Slint; Voltar/Avançar/Recarregar/Inspecionar). **Páginas de erro:** premissa do
+spec ERRADA — o Servo JÁ renderiza a própria página de erro (não é tela branca) e NÃO sinaliza falha ao
+embedder (`LoadStatus` sem erro; #5463) → detectar p/ injetar a nossa é inviável → **decisão do usuário:
+aceitar o padrão do Servo** (tema próprio DEFERIDO). Pegadinha de layout (**L-012**): os box-layouts do
+Slint **top-alinham filhos de tamanho fixo** → `IconBtn`/`LockIcon`/favicon foram feitos
+**auto-centralizáveis** (root estica na linha + box interno centrado em y). Decisões em **ADR-0012**;
+**AD-015** + **L-012** abaixo. Evidência (L-008, sem captura de janela): design por screenshot do **Pencil**
++ gate verde (fmt/clippy `-D warnings`/**9 testes**, +3 unit dos helpers puros) + CI + smoke do usuário
+(incl. re-teste da centralização). **Nenhuma dep nova; config protegida intocada. 9 commits.** **Próximo:
+M10 (performance) e M11 (robustez).**
+
+**Marco M8 CONCLUÍDO** ✅ — **Sustentabilidade (Goal #3)**, o ÚLTIMO Goal do PROJECT ainda
 não atacado; mitiga o risco existencial **L-001** (o Verso morreu afogado no churn do Servo) transformando
 a lição num MECANISMO. Entregue: **(1) CI** (`.github/workflows/ci.yml`) que valida o gate na revisão
 fixada (**archgate → fmt → clippy `--exclude servo-poc -D warnings` → test**) por push(main)+PR+manual,
@@ -36,6 +67,21 @@ outras plataformas (Windows/DirectX, macOS/Metal, Android).**
 ---
 
 ## Recent Decisions (Last 60 days)
+
+### AD-015: M9 — redesign do chrome (dark refinado) + UX de navegação (2026-06-12)
+
+**Decision:** Repaginar o chrome na direção **dark refinado** (tokens em `global Theme` + componentes no
+`ui/app.slint`) e acoplar a UX de navegação SEM regredir função: **zoom** nativo (`set_page_zoom`),
+**find-in-page por injeção de JS** (sem API nativa no Servo 0.2.0), **favicons** (`notify_favicon_changed`),
+**atalhos** interceptados no `on_forward_key`, **menu `⋯`/find/context** como overlays por `bool`. Páginas
+de erro: **aceitar o padrão do Servo** (tema próprio deferido). Formalizado no **ADR-0012**.
+**Reason:** Feedback do usuário ("a UI está horrível"); o motor estava provado mas o produto, cru. A
+pesquisa na fonte reposicionou 2 itens: find não tem API nativa (→ injeção de JS, reusando o caminho do
+devtools eval) e o "erro = tela branca" era falso (o Servo já mostra a própria; sem sinal ao embedder).
+**Trade-off:** find muta o DOM (reversível) e re-destaca por tecla; favicon sem un-premultiply; right-click
+do chrome sobrepõe o menu custom de páginas; sem página de erro temática.
+**Impact:** Browser apresentável + UX do dia a dia. Nenhuma dep nova (cadeado desenhado, swap BGRA à mão);
+config protegida intocada; embedding fino (L-001) e re-export inline (L-007) preservados. Base p/ M10/M11.
 
 ### AD-014: M8 — sustentabilidade (CI hospedado free + runbook medido + archgate + sandbox) (2026-06-11)
 
@@ -312,6 +358,21 @@ checados localmente) e validar o resto **empiricamente** (push + `gh run watch`)
 assumir que "CI completo roda de boa" sem reconfirmar na prática (padrão de honestidade M6/M7).
 **Processo:** ADR-0011 + archgate (ADR↔check) operacionalizam a decisão; runbook mede o Goal #3.
 
+### L-012: Box-layouts do Slint top-alinham filhos de tamanho fixo (2026-06-12)
+
+**Context:** No M9, ao montar as barras (abas/toolbar/omnibox/favoritos) com `HorizontalLayout` contendo
+ícones/favicon/cadeado de tamanho FIXO ao lado de `Text` esticáveis.
+**Problem:** Os `Text` (altura esticada + `vertical-alignment: center`) apareciam centrados, mas os filhos
+de tamanho FIXO (favicon 15px, cadeado 14px, ★/× dos `IconBtn`) ficavam **colados no TOPO** da linha — os
+box-layouts do Slint NÃO centram no eixo cruzado um filho que não estica; alinham no início (top). Quanto
+maior o vão (item pequeno em linha alta), mais óbvio (o usuário notou favicon/cadeado/★/× de favorito).
+**Solution:** Tornar os componentes **auto-centralizáveis**: o root NÃO fixa `height` (estica p/ a altura
+da linha) e o box VISÍVEL (tamanho fixo) é centrado por `y: (parent.height - self.height) / 2`. Aplicado em
+`IconBtn` (prop `size`), `LockIcon` e nos dois favicons (aba + favorito). Alternativa (mais verbosa):
+embrulhar cada item num `VerticalLayout { alignment: center }`.
+**Prevents:** "ícones colados no topo" ao misturar itens fixos e esticáveis num box-layout do Slint.
+**Processo:** o sintoma (Text centra, fixos não) revela a regra; verificado por smoke do usuário (L-008).
+
 ## Quick Tasks Completed
 
 | #   | Description | Date | Commit | Status |
@@ -321,6 +382,14 @@ assumir que "CI completo roda de boa" sem reconfirmar na prática (padrão de ho
 
 ## Deferred Ideas
 
+- [ ] **Página de erro temática** (M9, ADR-0012): o Servo já mostra a própria página de erro (não é tela
+  branca) mas é clara/sem tema; não há sinal de falha ao embedder (`LoadStatus` sem erro; upstream #5463) →
+  tema próprio inviável hoje. Destrava com override de recurso (`set_resources_instance`) OU quando #5463
+  expuser um sinal de erro ao embedder — Captured during: M9
+- [ ] **Find-in-page v2** (M9): regex / "match whole word" / WebSocket-aware; hoje é injeção de JS
+  (TreeWalker via `evaluate_javascript`) que muta o DOM (reversível) e re-destaca por tecla — Captured during: M9
+- [ ] **Favicon un-premultiply** (M9): dispensado (ícone de 15px; diferença só em bordas semitransparentes);
+  formatos K8/KA8/RGB8 ignorados (mostra o dot placeholder) — Captured during: M9
 - [x] **Medição sistemática de RAM vs. Chromium para validar a tese central** — feito (M5, ADR-0008): harness `scripts/m5/`, **tese VALIDADA** (BB 1,84× mais leve ocioso em PSS, 2,16× por aba), "ordens de magnitude" qualificado p/ ~1,8×
 - [ ] **Relatório interno do Servo** (`create_memory_report` → breakdown JS-heap/layout) cruzado com o RSS do SO — adiado no M5 (L-001: 4+ superfícies de API de crate interno; acessível via `servo::profile_traits`, `lib.rs:54`) — Captured during: M5
 - [ ] **Otimizar o baseline absoluto** (171 MiB ociosos não são "featherweight"; single-process carrega SpiderMonkey+layout+wgpu/Vulkan+Slint) — candidato a marco futuro; M5 só MEDIU — Captured during: M5
@@ -359,6 +428,7 @@ assumir que "CI completo roda de boa" sem reconfirmar na prática (padrão de ho
 - [x] **M4: recursos de navegador** — feito (ADR-0007, AD-010, L-007): multi-aba (`TabManager`/`Tab`, reusa a ponte GPU do M3), `window.open`, favoritos/histórico/sessão persistidos em JSON (`src/persist.rs`, `serde`/`serde_json`/`dirs`), painel+autocomplete de histórico, restauração de sessão. Chrome → `ui/app.slint` (re-export inline, sem build.rs). Evidência: drivers in-app (`BASEDBROWSER_TAB_TEST`/`BOOKMARK_TEST`/`HISTORY_TEST`) + dumps por aba. 8 commits (T1–T7 + T4b)
 - [x] **M5: validar a tese (footprint vs. Chromium)** — feito (ADR-0008, AD-011, L-008): harness bash `scripts/m5/` (`measure.sh`+`run.sh`+`pages/`), PPID-walk de `/proc/smaps_rollup`, PSS-título, soma da árvore, perfil limpo, release, K=5. Hook `BASEDBROWSER_OPEN_TABS`. **Tese VALIDADA** (ocioso BB 171,1 MiB PSS / 1 proc vs Chrome 314,7 / 13 proc = 1,84×; por-aba 5,5 vs 11,8 MiB = 2,16×; pesada 205 vs 333 MiB). "Ordens de magnitude" qualificado p/ ~1,8× (PSS). Commits atômicos T1–T7
 - [x] **M6: recursos de usuário** — feito (ADR-0009, AD-012, L-009): persistência de cookies + Web Storage via `opts.config_dir` (`init_manager`); "limpar dados de navegação" (cookies/storage via `SiteDataManager` + histórico, preserva favoritos); downloads DEFERIDO (inviável na API estável do Servo 0.2.0). Evidência: drivers `BASEDBROWSER_{PERSIST,CLEAR}_TEST` + `scripts/m6/` (verify-persist: RUN2 lê `cookie=42 local=persisted-99`; verify-clear: cookies/histórico→0, favoritos preservados). Nenhuma dep nova. 5 commits T1–T5
+- [x] **M9: redesign da UI + UX de navegação** — feito (ADR-0012, AD-015, L-012): chrome "dark refinado" (`global Theme` + componentes `IconBtn`/`LockIcon`/`MenuItem`/`TextBtn`/`SearchField`; abas-pílula, omnibox arredondada + cadeado, toolbar em ícones, menu `⋯`) + **zoom** (`set_page_zoom`, Ctrl +/−/0) + **find-in-page** por injeção de JS (`setup_find` + TreeWalker; Servo sem API nativa) + **favicons** (`notify_favicon_changed`→`servo::Image`→`slint::Image`) + **atalhos** (`on_forward_key` antes do Servo; Ctrl+L→omnibox) + **menu de contexto** (right-click). Erro de load = aceitar padrão do Servo (tema deferido). L-012: Slint top-alinha filhos fixos → auto-centrar. Evidência: design Pencil + gate verde (9 testes, +3 unit dos helpers) + CI + smoke. Nenhuma dep nova. 9 commits
 - [x] **M7: devtools / inspeção in-app** — feito (ADR-0010, AD-013, L-010): console (`show_console_message`) + eval (`evaluate_javascript`) in-process + **cliente RDP próprio** (`src/devtools_client.rs`) p/ rede completa (req+resp/headers/payload) conectando no servidor de devtools do Servo (loopback, OPT-IN `BASEDBROWSER_DEVTOOLS`); painel no `ui/app.slint` (Console + Rede). Evidência: driver `BASEDBROWSER_DEVTOOLS_TEST` + `scripts/m7/verify-devtools.sh` (6 checagens ✅). Nenhuma dep nova. 6 commits T1–T6
 - [x] **M8: sustentabilidade (Goal #3)** — feito (ADR-0011, AD-014, L-011): **CI** (`.github/workflows/ci.yml`, archgate+fmt+clippy+test) verde no runner free (cold-build do motor cabe; prova: o CI do próprio Servo) + **runbook** medido (`docs/runbooks/atualizar-servo.md` + `scripts/update-servo/run.sh`, worktree isolado; dry-run rehearsal verde ~81s vs meta < 1 dia) + **archgate** (`scripts/checks/`, ADR↔check erro-como-instrução) + **sandbox sem egress** (smoke `OK: sem egress`). Pegadinhas de infra (L-011): free-disk-space obrigatório, `rustflags:""`, apt resiliente a renames. Nenhuma dep nova; config protegida intocada. 6 commits T0–T6
 

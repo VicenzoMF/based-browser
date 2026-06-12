@@ -24,6 +24,25 @@ Planeje antes de executar (Plan Mode). Pipeline: Research → Plan → Implement
 Use `context7` para docs de libs; o motor/Servo muda rápido — confirme a API, não chute.
 
 ## Status
+Marco **M9 ✅** — **redesign da UI (chrome "dark refinado") + UX de navegação**. O usuário disse "a UI está
+horrível"; o chrome virou apresentável SEM regredir função (todos os structs/props/callbacks da ponte
+Rust↔Slint preservados; embedding fino, L-001). **Visual** (`ui/app.slint`): `global Theme` (tokens slate
+`#15151b` + acento indigo `#6c5ce7`) + componentes (`IconBtn`/`LockIcon` desenhado/`MenuItem`/`TextBtn`/
+`SearchField`); abas-pílula c/ favicon, **omnibox** arredondada (`TextInput` cru + cadeado http/https + ★),
+toolbar em ícones (‹ › ⟳ ⋯), loading fino, e o **menu overflow `⋯`** (recolhe Histórico/Limpar/DevTools/
+**Zoom**/**Find**). **UX** (pesquisa NA FONTE): **zoom** nativo (`WebView::set_page_zoom`, Ctrl +/−/0);
+**find-in-page por INJEÇÃO de JS** (`setup_find` + TreeWalker via `evaluate_javascript` — o Servo 0.2.0 NÃO
+expõe busca nativa; callback assíncrono → `FindState`+Timer, ADR-0007); **favicons** (`notify_favicon_changed`
+→ `WebView::favicon()` → `servo::Image`→`slint::Image`); **atalhos** (Ctrl+T/W/L/R/Tab/F, Ctrl +/−/0, Esc)
+interceptados no `on_forward_key` ANTES do repasse ao Servo (roubam a tecla da página; Ctrl+L foca a omnibox
+via `focus-url-bar` tratado no Slint); **menu de contexto** no right-click. Menu/find/context = **overlays
+por `bool`** (padrão do histórico/devtools). **Páginas de erro:** o Servo já mostra a própria (não é tela
+branca) e não sinaliza falha ao embedder → tema próprio DEFERIDO. Pegadinha (**L-012**): os layouts do Slint
+**top-alinham filhos de tamanho fixo** → `IconBtn`/`LockIcon`/favicon auto-centram (root estica + box interno
+centrado em y). Decisões em **ADR-0012** · **AD-015** · **L-012**. Verificação (L-008): design aprovado por
+**screenshot do Pencil** (`designs/based-browser.pen`) + gate verde (9 testes) + CI + smoke do usuário.
+Nenhuma dep nova; config protegida intocada. 9 commits. Próximo: **M10 (performance: glFinish→fence, polling
+adaptativo)** e **M11 (robustez: crash de aba isolado, scroll restore)**.
 Marco **M8 ✅** — **Sustentabilidade (Goal #3)**, o ÚLTIMO Goal do PROJECT; mitiga o risco existencial
 **L-001** (churn do Servo) por MECANISMO. **(1) CI** (`.github/workflows/ci.yml`, push+PR+manual, runner
 `ubuntu-24.04` free) espelha o gate local: **archgate → fmt → clippy `--exclude servo-poc -D warnings` →

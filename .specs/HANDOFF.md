@@ -1,46 +1,51 @@
 # Handoff
 
-**Date:** 2026-06-11
-**Feature:** M8 — Sustentabilidade (Goal #3): CI na revisão fixada + runbook de bump + archgate + sandbox ✅ CONCLUÍDO
-**Task:** M8 fechado. **Todos os 3 Goals do PROJECT atacados.** Próximo = outras plataformas.
+**Date:** 2026-06-12
+**Feature:** M9 — Redesign da UI (chrome "dark refinado") + UX de navegação ✅ CONCLUÍDO
+**Task:** M9 fechado. Próximos = M10 (performance) e M11 (robustez).
 
 ## Completed ✓
 
-- **M8 done** (critério: CI verde na revisão fixada + runbook determinístico medível vs "< 1 dia" + ADR + push):
-  - **T0 — spec tlc** (`889d074`): `.specs/features/m8-sustentabilidade/{spec,tasks}.md`.
-  - **T1 — archgate** (`f4452bc`): `scripts/checks/` (`archgate.sh` + `check-servo-pin` + `check-adr-status`),
-    erro-como-instrução (ERRO/POR QUÊ/FIX/EXEMPLO), acopla ADR↔check; ligado no `lefthook.yml`.
-  - **T2 — CI** (`d90626f`): `.github/workflows/ci.yml` (free-disk → apt → setup-rust-toolchain 1.92.0 +
-    cache → archgate → fmt → clippy `--exclude servo-poc -D warnings` → test). Actions pinadas por SHA.
-  - **T3 — runbook** (`c2470c2`): `docs/runbooks/atualizar-servo.md` + `scripts/update-servo/run.sh`
-    (worktree isolado, cronometra vs "< 1 dia").
-  - **T4 — sandbox** (`8c92f56`): `sandbox/` no-egress verificável (smoke) + headful documentado (caveat GPU).
-  - **T5 — dry-run**: rehearsal 0.2.0 (cache quente) → gate **VERDE em ~81s**; `main` intocada, worktree limpo.
-  - **T6 — ADR-0011 + docs + push** (este): ADR-0011 + STATE(AD-014/L-011)/ROADMAP/HANDOFF/AGENTS.
-  - **Verificado:** **CI run a frio VERDE em ~15,5 min** (cold-build do motor+mozjs cabe no runner free —
-    sem degradar); archgate sai 0 (bom) / 2 (pin divergente, testado em repo scratch); smoke da sandbox
-    `OK: sem egress`. Gate local verde por commit (archgate+clippy). Nenhuma dep nova; config protegida intocada.
+- **M9 done** (critério: chrome repaginado SEM regressão de função + UX acoplada + gate/CI verde + design
+  aprovado por screenshot + push):
+  - **T1 (`9b60846`)** — chrome repaginado: `global Theme` (tokens) + componentes (`IconBtn`/`LockIcon`/
+    `MenuItem`); abas-pílula, omnibox arredondada + cadeado, toolbar em ícones, loading fino, menu `⋯`.
+  - **T6 (`c43c9ed`)** — zoom (`WebView::set_page_zoom` por aba, menu `⋯` − NN% +).
+  - **T7 (`12d4a23`)** — find-in-page por **injeção de JS** (`setup_find` + TreeWalker; Servo sem API nativa).
+  - **T5 (`ee8b384`)** — atalhos (Ctrl+T/W/L/R/Tab/F, Ctrl +/−/0, Esc) no `on_forward_key`; Ctrl+L → omnibox.
+  - **T8 (`8b86e6d`)** — favicons (`notify_favicon_changed` → `servo::Image`→`slint::Image`).
+  - **T9 (`4e6d629`)** — menu de contexto (right-click; reusa callbacks).
+  - **T4 (`b40788c`)** — restyle dos overlays (`TextBtn`/`SearchField`; sem std-widgets claros).
+  - **fix (`e4b19f1`)** — centralização vertical (L-012: layouts do Slint top-alinham filhos de tamanho fixo).
+  - **tests (`c31cda3`)** — unit tests dos helpers puros (zoom/find).
+  - **T11 (este)** — ADR-0012 + STATE(AD-015/L-012)/ROADMAP/HANDOFF/AGENTS + `.pen` + push.
+  - **Verificado:** gate verde (fmt/clippy `-D warnings`/**9 testes**) a CADA commit + CI; design aprovado
+    por screenshot do Pencil; smoke do usuário OK (incl. re-teste da centralização). Nenhuma dep nova; config
+    protegida intocada.
 
 ## In Progress
 
-- Nada — checkpoint limpo na `main` (T0–T6 commitados; push feito). CI re-roda verde na revisão final.
+- Nada — checkpoint limpo na `main` (push feito). CI re-roda na revisão final.
 
 ## Pending (próximos marcos)
 
-1. **Outras plataformas** (Windows/DirectX, macOS/Metal, Android) — matriz multi-OS no mesmo CI. Candidato natural.
-2. **Otimizar baseline absoluto** (171 MiB ociosos; M5 só mediu).
-3. Deferidos: downloads/modo privado (M6); DevTools v2/hardening por token (M7); sccache no CI (M8).
+1. **M10 — Performance & responsividade:** sync GPU por fence/semáforo (no lugar do `glFinish` do M3);
+   intervalo de polling adaptativo do event-loop.
+2. **M11 — Robustez & feedback:** crash de aba isolado (delegate `notify_crashed`), scroll restore.
+3. **Deferidos M9:** página de erro **temática** (override de recurso do Servo — destrava se o upstream #5463
+   expuser sinal de erro ao embedder); find-in-page v2 (regex/contexto/WebSocket); favicon un-premultiply.
+4. Outras plataformas (Windows/DirectX, macOS/Metal, Android).
 
 ## Blockers
 
-- Nenhum. Pendências humanas (não bloqueiam): 2 deny rules do AgentShield no `settings.json`; conectores claude.ai (web).
+- Nenhum.
 
 ## Context
 
 - Branch: `main` (github.com/VicenzoMF/based-browser). Idioma: **pt-BR**. Plan Mode antes de executar.
-- **M8 (ADR-0011 / AD-014 / L-011):** o CI completo do Servo CABE num runner free (prova: o CI do próprio
-  Servo). 3 pegadinhas de infra (L-011): `free-disk-space` obrigatório; `rustflags:""` (a action seta `-D
-  warnings` global → quebraria no warning de dep); apt resiliente a renames mesa 22.04/24.04. Archgate
-  acopla o pin (config protegida, ADR-0002) a um check; bump real exige ADR novo + atualizar `EXPECT_*`.
-- **Reproduzir CI:** push → `gh run watch`. **Reproduzir runbook:** `scripts/update-servo/run.sh 0.2.0`.
-- Decisões: STATE AD-001..014 · Lições: L-001..011 · ADRs: 0001..0011.
+- **M9 (ADR-0012 / AD-015 / L-012):** redesign "dark refinado" no `ui/app.slint` (re-export inline da macro,
+  L-007) + UX cirúrgica no `src/main.rs`/`input.rs`. Find por injeção de JS (Servo 0.2.0 sem busca nativa);
+  erro de load sem sinal ao embedder (#5463) → tema de erro DEFERIDO (aceito o padrão do Servo). Pegadinha
+  L-012: Slint top-alinha filhos de tamanho fixo → auto-centrar (root estica + box interno centrado em y).
+- **Reproduzir:** `cargo run -p basedbrowser` (smoke do chrome/atalhos/zoom/find/favicon/context).
+- Decisões: STATE AD-001..015 · Lições: L-001..012 · ADRs: 0001..0012.

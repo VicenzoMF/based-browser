@@ -1,12 +1,14 @@
 # Roadmap
 
-**Current Milestone:** Outras plataformas (Windows/DirectX, macOS/Metal, Android) — PLANNED (ver Future
-Considerations). **Todos os 3 Goals do PROJECT ✅ atacados** (footprint M5; motor M1–M3; sustentabilidade M8).
-**Status:** M0–M8 ✅ concluídos (M0–M4 em 2026-06-10; **M5–M8 em 2026-06-11**). M5 = tese VALIDADA
-(ADR-0008). M6 = recursos de usuário (cookies/Web Storage PERSISTEM; "limpar dados"; downloads DEFERIDO,
-ADR-0009). M7 = devtools / inspeção in-app (console + eval + rede req/resp via cliente RDP próprio,
-SEM Firefox; OPT-IN, ADR-0010). **M8 = sustentabilidade (Goal #3)** — CI na revisão fixada + runbook
-medido de bump + archgate + sandbox sem egress (ADR-0011).
+**Current Milestone:** M10 (performance) / M11 (robustez) — PLANNED (ver Future Considerations). **Todos os
+3 Goals do PROJECT ✅ atacados** (footprint M5; motor M1–M3; sustentabilidade M8); **M9 = produto
+apresentável** (UI repaginada + UX de navegação).
+**Status:** M0–M9 ✅ concluídos (M0–M4 em 2026-06-10; M5–M8 em 2026-06-11; **M9 em 2026-06-12**). M5 = tese
+VALIDADA (ADR-0008). M6 = recursos de usuário (cookies/Web Storage PERSISTEM; "limpar dados"; downloads
+DEFERIDO, ADR-0009). M7 = devtools / inspeção in-app (console + eval + rede req/resp via cliente RDP
+próprio, SEM Firefox; OPT-IN, ADR-0010). **M8 = sustentabilidade (Goal #3)** — CI na revisão fixada +
+runbook medido de bump + archgate + sandbox sem egress (ADR-0011). **M9 = redesign da UI (chrome "dark
+refinado") + UX de navegação** (atalhos/zoom/find/menu `⋯`/context/favicon; ADR-0012).
 
 ---
 
@@ -284,10 +286,45 @@ Nenhuma dep nova; config protegida intocada. 6 commits atômicos (T0–T6).
 
 ---
 
-## Future Considerations (pós-M8)
+## M9 — Redesign da UI (chrome "dark refinado") + UX de navegação ✅ CONCLUÍDO (2026-06-12)
 
-- **Outras plataformas:** Windows/DirectX, macOS/Metal, Android (matriz multi-OS no mesmo CI). É o próximo
-  marco natural (os 3 Goals do PROJECT já foram atacados).
+**Goal:** Tornar o browser apresentável (feedback do usuário: "a UI está horrível") e acoplar a UX de
+navegação que faltava, SEM regredir função. **Atingido** — `ui/app.slint` repaginado + pontos cirúrgicos no
+`src/main.rs`/`input.rs`. Direção visual aprovada no **Pencil** (`designs/based-browser.pen`). **ADR-0012**.
+
+### Features
+
+**Chrome dark refinado** - DONE
+
+- `global Theme` (tokens slate `#15151b` + acento indigo `#6c5ce7`) + componentes (`IconBtn`, `LockIcon`
+  desenhado, `MenuItem`, `TextBtn`/`SearchField` — substituem `Button`/`LineEdit` do std-widgets)
+- Abas-pílula (favicon + elide + × no hover; ativa elevada + contorno accent); **omnibox** arredondada
+  (`TextInput` cru + cadeado http/https + ★); toolbar em ícones (‹ › ⟳ ⋯); loading fino; **menu `⋯`**
+  (Histórico/Limpar/DevTools/Zoom/Find). Menu/find/context = overlays por `bool` (padrão M4/M7)
+
+**UX de navegação** - DONE
+
+- **Zoom** nativo (`WebView::set_page_zoom`, Ctrl +/−/0, por-aba); **find-in-page** por injeção de JS
+  (`setup_find` + TreeWalker — Servo 0.2.0 sem busca nativa); **favicons** (`notify_favicon_changed` →
+  `slint::Image`); **atalhos** (Ctrl+T/W/L/R/Tab/F, Ctrl +/−/0, Esc) no `on_forward_key`; **menu de
+  contexto** (right-click)
+- **Páginas de erro:** o Servo já mostra a própria (não é tela branca) e não sinaliza falha ao embedder
+  (#5463) → tema próprio **deferido** (decisão do usuário)
+- **Lição (L-012):** box-layouts do Slint top-alinham filhos de tamanho fixo → componentes auto-centram
+
+Evidência (L-008): design por screenshot do Pencil + gate verde (**9 testes**) + CI + smoke do usuário.
+Nenhuma dep nova; config protegida intocada. 9 commits.
+
+---
+
+## Future Considerations (pós-M9)
+
+- **M10 — Performance & responsividade:** sync GPU por fence/semáforo (no lugar do `glFinish` do M3);
+  intervalo de polling adaptativo do event-loop.
+- **M11 — Robustez & feedback:** crash de aba isolado (`WebViewDelegate::notify_crashed`); scroll restore.
+- **Outras plataformas:** Windows/DirectX, macOS/Metal, Android (matriz multi-OS no mesmo CI).
 - **Otimizar o baseline absoluto** (171 MiB ociosos; M5 só MEDIU) — candidato a marco futuro.
 - **Downloads** / **modo privado** (deferidos do M6); **DevTools v2** / hardening por token (deferidos do M7).
+- **Deferidos do M9:** página de erro temática (override de recurso / upstream #5463); find-in-page v2
+  (regex/contexto); favicon un-premultiply.
 - **sccache** no CI se o cache de 10 GB do GHA estourar (deferido do M8).
