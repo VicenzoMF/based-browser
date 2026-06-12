@@ -2318,6 +2318,14 @@ fn setup_devtools(
     app.set_dev_console(console_model.clone().into());
     app.set_dev_net(net_model.clone().into());
 
+    // M10 (T5): restaura tamanho/orientação do dock do DevTools (default da UI se não houver salvo).
+    if let Some(dock) = persist::load_dock() {
+        if dock.size > 0.0 {
+            app.set_devtools_size(dock.size);
+        }
+        app.set_dock_right(dock.right);
+    }
+
     // Avaliar JS na aba ativa (REPL).
     let (mgr, dt) = (manager.clone(), devtools.clone());
     app.on_dev_eval(move |script| devtools_eval(&mgr, &dt, script.to_string()));
@@ -2336,6 +2344,16 @@ fn setup_devtools(
     app.on_search_devtools(move |q| {
         *dt.filter.borrow_mut() = q.to_string();
         dt.dirty.set(true);
+    });
+    // M10 (T5): persiste o dock — chamado pelo Slint no FIM do arrasto do divisor e no toggle base/direita.
+    let weak_persist = app.as_weak();
+    app.on_persist_dock(move || {
+        if let Some(app) = weak_persist.upgrade() {
+            persist::save_dock(&persist::DockState {
+                size: app.get_devtools_size(),
+                right: app.get_dock_right(),
+            });
+        }
     });
 
     let weak = app.as_weak();
@@ -2402,6 +2420,8 @@ fn rebuild_dev_models(
         None => "servidor desligado — rode com BASEDBROWSER_DEVTOOLS p/ ver a rede".to_string(),
     };
     app.set_dev_status(status.into());
+    // M10 (ADR-0014): porta do RDP p/ a afford. "Debugger ↗" (0 = desligado). u16→i32 sem perda.
+    app.set_dev_rdp_port(devtools.port.get().map_or(0, i32::from));
 }
 
 /// Junta uma lista de headers em texto multi-linha `nome: valor` p/ o detalhe do painel de rede.

@@ -20,6 +20,7 @@ const APP_DIR: &str = "basedbrowser";
 const BOOKMARKS_FILE: &str = "bookmarks.json";
 const HISTORY_FILE: &str = "history.json";
 const SESSION_FILE: &str = "session.json";
+const DOCK_FILE: &str = "dock.json";
 
 /// Teto de entradas do histórico em disco (FIFO: as mais antigas saem primeiro). Limita o tamanho do
 /// arquivo sem virar um banco de dados — alinhado ao escopo do M4.
@@ -46,6 +47,15 @@ pub struct HistoryEntry {
 pub struct Session {
     pub tabs: Vec<String>,
     pub active: usize,
+}
+
+/// M10: estado do dock do devtools (split). `size` = altura (base) / largura (direita) em px lógicos;
+/// `right` = dockado à direita. Persistido p/ lembrar tamanho/orientação entre execuções. (Sem `Eq`:
+/// `f32` não o implementa.)
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DockState {
+    pub size: f32,
+    pub right: bool,
 }
 
 /// Estado de persistência vivo na memória durante a execução. Carregado no start ([`AppData::load`])
@@ -148,6 +158,20 @@ pub fn load_session() -> Option<Session> {
 /// Persiste a sessão de abas (atômico). Erros são logados, não propagados.
 pub fn save_session(session: &Session) {
     save_under(SESSION_FILE, session, "sessão");
+}
+
+/// M10: carrega o estado do dock do devtools (None se não existe → usa o default da UI).
+pub fn load_dock() -> Option<DockState> {
+    let path = config_dir()?.join(DOCK_FILE);
+    if !path.exists() {
+        return None;
+    }
+    Some(read_json_or_default(&path))
+}
+
+/// M10: persiste o estado do dock (atômico). Erros logados, não propagados.
+pub fn save_dock(dock: &DockState) {
+    save_under(DOCK_FILE, dock, "dock");
 }
 
 /// Insere uma visita em `history`, devolvendo `true` se algo mudou (para o chamador decidir persistir).

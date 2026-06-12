@@ -342,6 +342,9 @@ export component MainWindow inherits Window {
     in-out property <int> dev-tab: 0; // 0 = console, 1 = rede
     in-out property <int> dev-net-sel: -1; // linha de rede selecionada (detalhe)
     in-out property <int> dev-net-detail-tab: 1; // 0 = Request, 1 = Response (no detalhe)
+    // M10 (ADR-0014): porta do servidor RDP (0 = desligado) p/ a afford. "Debugger ↗" (step-debug Firefox).
+    in property <int> dev-rdp-port: 0;
+    in-out property <bool> debug-info-open: false;
     // M10: dock do DevTools (split screen). devtools-size = ALTURA (base) ou LARGURA (direita) do dock.
     in-out property <length> devtools-size: 300px;
     in-out property <bool> dock-right: false; // false = base (split horizontal), true = direita (vertical)
@@ -376,6 +379,8 @@ export component MainWindow inherits Window {
     callback clear-devtools();
     // M10: filtro do painel de rede (URL/método/status/nome).
     callback search-devtools(string);
+    // M10 (T5): persiste tamanho/orientação do dock (chamado no fim do arrasto do divisor e no toggle).
+    callback persist-dock();
     // M9: zoom de página (Ctrl +/−/0 e o menu ⋯).
     callback zoom-in();
     callback zoom-out();
@@ -1049,6 +1054,8 @@ export component MainWindow inherits Window {
                     pointer-event(e) => {
                         if (e.kind == PointerEventKind.down) {
                             self.grab = root.dock-right ? self.mouse-x : self.mouse-y;
+                        } else if (e.kind == PointerEventKind.up) {
+                            root.persist-dock();
                         }
                     }
                     moved => {
@@ -1108,12 +1115,52 @@ export component MainWindow inherits Window {
                             clicked => {
                                 root.dock-right = !root.dock-right;
                                 root.devtools-size = root.dock-right ? content.width / 2 : content.height / 2;
+                                root.persist-dock();
                             }
+                        }
+                        DevToolBtn {
+                            glyph: "↗";
+                            tip: "Debugger (Firefox)";
+                            active: root.debug-info-open;
+                            clicked => { root.debug-info-open = !root.debug-info-open; }
                         }
                         DevToolBtn {
                             glyph: "✕";
                             tip: "Fechar";
                             clicked => { root.devtools-open = false; }
+                        }
+                    }
+
+                    // M10 (ADR-0014 / caminho A): afford. de step-debug via Firefox. O painel in-app é
+                    // OBSERVACIONAL (console/rede/eval); breakpoints/pause/step vivem no MOTOR (mozjs) →
+                    // inalcançáveis pelo embedder. A forma completa é o Firefox no NOSSO socket RDP.
+                    if root.debug-info-open : Rectangle {
+                        background: Theme.bg-surface-2;
+                        border-radius: Theme.radius-btn;
+                        border-width: 1px;
+                        border-color: Theme.accent-soft;
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+                            Text {
+                                text: "Step-debugger (breakpoints/pause/step) via Firefox DevTools:";
+                                color: Theme.text-hi;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            if root.dev-rdp-port > 0 : Text {
+                                text: "Firefox → about:debugging → 'Conectar' → localhost:\{root.dev-rdp-port} → Inspecionar a aba.";
+                                color: Theme.ok;
+                                font-family: "monospace";
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            if root.dev-rdp-port == 0 : Text {
+                                text: "Servidor RDP desligado. Reinicie com: BASEDBROWSER_DEVTOOLS=7000 cargo run -p basedbrowser";
+                                color: Theme.text-mid;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
                         }
                     }
 
