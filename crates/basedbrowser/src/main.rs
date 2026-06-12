@@ -189,6 +189,9 @@ struct DevtoolsState {
     net: RefCell<Vec<NetRecord>>,
     /// Console/rede mudaram → o LOOP re-sincroniza os models da UI (T5). Análogo ao `chrome_dirty`.
     dirty: Cell<bool>,
+    /// M10: filtro de texto do painel de rede (substring, case-insensitive sobre url/método/status/nome).
+    /// Escrito pelo callback `on_search_devtools`; aplicado em [`rebuild_dev_models`].
+    filter: RefCell<String>,
     /// Lado-emissor do canal cliente RDP → UI. O delegate o CLONA para a thread do cliente.
     net_tx: Sender<NetRecord>,
     /// Lado-receptor (drenado pelo timer de devtools). `Option` p/ ser `take`-able caso necessário.
@@ -205,6 +208,7 @@ impl DevtoolsState {
             console: RefCell::new(Vec::new()),
             net: RefCell::new(Vec::new()),
             dirty: Cell::new(false),
+            filter: RefCell::new(String::new()),
             net_tx,
             net_rx: RefCell::new(Some(net_rx)),
             client_spawned: Cell::new(false),
@@ -2327,6 +2331,12 @@ fn setup_devtools(
     // Abrir o painel força um refresh dos models no próximo tick.
     let dt = devtools.clone();
     app.on_toggle_devtools(move || dt.dirty.set(true));
+    // M10: filtro do painel de rede — guarda o termo e marca dirty p/ reconstruir os models filtrados.
+    let dt = devtools.clone();
+    app.on_search_devtools(move |q| {
+        *dt.filter.borrow_mut() = q.to_string();
+        dt.dirty.set(true);
+    });
 
     let weak = app.as_weak();
     let timer = Timer::default();
@@ -2361,16 +2371,28 @@ fn rebuild_dev_models(
     console_model.set_vec(console);
 
     let net = devtools.net.borrow();
+    let filter = devtools.filter.borrow().to_lowercase();
     let rows: Vec<DevNetRow> = net
         .iter()
+        .filter(|r| {
+            if filter.is_empty() {
+                return true;
+            }
+            let name = net_name(&r.url).to_lowercase();
+            r.url.to_lowercase().contains(&filter)
+                || r.method.to_lowercase().contains(&filter)
+                || r.status.to_lowercase().contains(&filter)
+                || name.contains(&filter)
+        })
         .map(|r| DevNetRow {
             method: r.method.as_str().into(),
             url: r.url.as_str().into(),
+            name: net_name(&r.url).into(),
             status: r.status.as_str().into(),
-            mime: r.mime.as_str().into(),
+            mime: short_mime(r.mime.as_str()).into(),
             req_headers: join_headers(&r.req_headers).into(),
             resp_headers: join_headers(&r.resp_headers).into(),
-            body: r.resp_body.as_str().into(),
+            body: pretty_body(r.mime.as_str(), r.resp_body.as_str()).into(),
         })
         .collect();
     net_model.set_vec(rows);
@@ -2389,6 +2411,40 @@ fn join_headers(headers: &[(String, String)]) -> String {
         .map(|(k, v)| format!("{k}: {v}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// M10: nome curto de um recurso de rede — último segmento do path (arquivo); senão host; senão a URL.
+fn net_name(url: &str) -> String {
+    if let Ok(parsed) = Url::parse(url) {
+        if let Some(seg) = parsed
+            .path_segments()
+            .and_then(|mut segs| segs.rfind(|p| !p.is_empty()))
+        {
+            return seg.to_string();
+        }
+        if let Some(host) = parsed.host_str() {
+            return host.to_string();
+        }
+    }
+    url.to_string()
+}
+
+/// M10: encurta o MIME p/ a coluna "Tipo" (ex.: "application/json; charset=utf-8" -> "json").
+fn short_mime(mime: &str) -> String {
+    let base = mime.split(';').next().unwrap_or(mime).trim();
+    base.rsplit('/').next().unwrap_or(base).to_string()
+}
+
+/// M10: se o corpo é JSON, devolve indentado (pretty); senão devolve como veio.
+fn pretty_body(mime: &str, body: &str) -> String {
+    if mime.contains("json") && !body.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+                return pretty;
+            }
+        }
+    }
+    body.to_string()
 }
 
 /// Drena o `net_rx` (`try_recv`) → upsert por `id` em `devtools.net`; marca `dirty` se algo mudou.

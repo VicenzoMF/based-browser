@@ -44,6 +44,7 @@ export struct DevConsoleLine {
 export struct DevNetRow {
     method: string,
     url: string,
+    name: string,
     status: string,
     mime: string,
     req-headers: string,
@@ -340,6 +341,7 @@ export component MainWindow inherits Window {
     in-out property <bool> devtools-open: false;
     in-out property <int> dev-tab: 0; // 0 = console, 1 = rede
     in-out property <int> dev-net-sel: -1; // linha de rede selecionada (detalhe)
+    in-out property <int> dev-net-detail-tab: 1; // 0 = Request, 1 = Response (no detalhe)
     // M10: dock do DevTools (split screen). devtools-size = ALTURA (base) ou LARGURA (direita) do dock.
     in-out property <length> devtools-size: 300px;
     in-out property <bool> dock-right: false; // false = base (split horizontal), true = direita (vertical)
@@ -372,6 +374,8 @@ export component MainWindow inherits Window {
     callback toggle-devtools();
     callback dev-eval(string);
     callback clear-devtools();
+    // M10: filtro do painel de rede (URL/método/status/nome).
+    callback search-devtools(string);
     // M9: zoom de página (Ctrl +/−/0 e o menu ⋯).
     callback zoom-in();
     callback zoom-out();
@@ -1158,12 +1162,51 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Aba REDE: lista de requisições + detalhe (headers/payload) da selecionada.
+                    // Aba REDE (M10): filtro + cabeçalho de colunas + lista (Método/Status/Nome/Tipo) +
+                    // detalhe com sub-abas Request/Response. Tudo que é dado de rede em monospace.
                     if root.dev-tab == 1 : VerticalLayout {
-                        spacing: 8px;
+                        spacing: 6px;
+                        // Filtro (substring sobre URL/método/status/nome — aplicado no Rust).
+                        SearchField {
+                            placeholder: "Filtrar (URL, método, status)…";
+                            edited(t) => { root.search-devtools(t); }
+                        }
+                        // Cabeçalho de colunas (espelha a lista abaixo).
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            spacing: 10px;
+                            Text {
+                                text: "Método";
+                                width: 56px;
+                                font-size: 11px;
+                                color: Theme.text-lo;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Status";
+                                width: 64px;
+                                font-size: 11px;
+                                color: Theme.text-lo;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Nome";
+                                horizontal-stretch: 1;
+                                font-size: 11px;
+                                color: Theme.text-lo;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Tipo";
+                                width: 70px;
+                                font-size: 11px;
+                                color: Theme.text-lo;
+                                vertical-alignment: center;
+                            }
+                        }
                         ListView {
                             for n[idx] in root.dev-net : Rectangle {
-                                height: 26px;
+                                height: 24px;
                                 border-radius: Theme.radius-btn;
                                 background: ntouch.has-hover || root.dev-net-sel == idx ? Theme.bg-elevated : transparent;
                                 ntouch := TouchArea {
@@ -1175,66 +1218,120 @@ export component MainWindow inherits Window {
                                     spacing: 10px;
                                     Text {
                                         text: n.method;
-                                        width: 48px;
+                                        width: 56px;
+                                        font-family: "monospace";
+                                        font-size: 12px;
                                         color: #9ab8ff;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: n.status == "" ? "…" : n.status;
-                                        width: 80px;
+                                        width: 64px;
+                                        font-family: "monospace";
+                                        font-size: 12px;
                                         color: Theme.ok;
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: n.url;
+                                        text: n.name;
+                                        horizontal-stretch: 1;
+                                        font-family: "monospace";
+                                        font-size: 12px;
                                         color: Theme.text-hi;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.mime;
+                                        width: 70px;
+                                        font-family: "monospace";
+                                        font-size: 12px;
+                                        color: Theme.text-mid;
                                         overflow: elide;
                                         vertical-alignment: center;
                                     }
                                 }
                             }
                         }
-                        if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : ScrollView {
-                            height: 40%;
-                            VerticalLayout {
-                                padding: 8px;
-                                spacing: 4px;
+                        // Detalhe da requisição selecionada: URL completa + sub-abas Request/Response.
+                        if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
+                                font-family: "monospace";
+                                font-size: 12px;
+                                color: Theme.text-hi;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Status: " + (root.dev-net[root.dev-net-sel].status == "" ? "…" : root.dev-net[root.dev-net-sel].status) + " · Tipo: " + root.dev-net[root.dev-net-sel].mime;
+                                font-size: 12px;
+                                color: Theme.text-mid;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
                                 alignment: start;
-                                Text {
-                                    text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
+                                TextBtn {
+                                    label: "Request";
+                                    active: root.dev-net-detail-tab == 0;
+                                    clicked => { root.dev-net-detail-tab = 0; }
                                 }
-                                Text {
-                                    text: "Status: " + root.dev-net[root.dev-net-sel].status + "    MIME: " + root.dev-net[root.dev-net-sel].mime;
-                                    color: Theme.text-hi;
+                                TextBtn {
+                                    label: "Response";
+                                    active: root.dev-net-detail-tab == 1;
+                                    clicked => { root.dev-net-detail-tab = 1; }
                                 }
-                                Text {
-                                    text: "— Request headers —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].req-headers;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "— Response headers —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].resp-headers;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "— Body —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].body;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
+                            }
+                            ScrollView {
+                                height: 40%;
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 4px;
+                                    alignment: start;
+                                    if root.dev-net-detail-tab == 0 : VerticalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        Text {
+                                            text: "— Request headers —";
+                                            font-size: 12px;
+                                            color: Theme.text-mid;
+                                        }
+                                        Text {
+                                            text: root.dev-net[root.dev-net-sel].req-headers;
+                                            font-family: "monospace";
+                                            font-size: 12px;
+                                            color: Theme.text-hi;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                    if root.dev-net-detail-tab == 1 : VerticalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        Text {
+                                            text: "— Response headers —";
+                                            font-size: 12px;
+                                            color: Theme.text-mid;
+                                        }
+                                        Text {
+                                            text: root.dev-net[root.dev-net-sel].resp-headers;
+                                            font-family: "monospace";
+                                            font-size: 12px;
+                                            color: Theme.text-hi;
+                                            wrap: word-wrap;
+                                        }
+                                        Text {
+                                            text: "— Body —";
+                                            font-size: 12px;
+                                            color: Theme.text-mid;
+                                        }
+                                        Text {
+                                            text: root.dev-net[root.dev-net-sel].body;
+                                            font-family: "monospace";
+                                            font-size: 12px;
+                                            color: Theme.text-hi;
+                                            wrap: word-wrap;
+                                        }
+                                    }
                                 }
                             }
                         }
