@@ -233,6 +233,67 @@ component SearchField inherits Rectangle {
     }
 }
 
+// M10: botão do toolbar do DevTools — ÍCONE compacto que REVELA o texto no hover (e mostra o label
+// quando é a aba `active`). Mantém a barra estreita (cabe no dock à direita) com descoberta por hover
+// (estilo Chrome). O root estica na linha; o conteúdo (ícone + label) é centrado.
+component DevToolBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <string> tip;
+    in property <bool> active: false;
+    callback clicked();
+    height: 28px;
+    border-radius: Theme.radius-btn;
+    background: root.active ? Theme.accent-soft : (touch.has-hover ? Theme.bg-elevated : transparent);
+    animate background { duration: 90ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        spacing: 5px;
+        alignment: center;
+        Text {
+            text: root.glyph;
+            font-size: 15px;
+            color: root.active ? Theme.accent : Theme.text-mid;
+            vertical-alignment: center;
+        }
+        // A aba ATIVA mostra o label inline (persistente); os demais mostram tooltip FLUTUANTE no hover.
+        if root.active : Text {
+            text: root.tip;
+            font-size: 12px;
+            color: Theme.accent;
+            vertical-alignment: center;
+        }
+    }
+    // Tooltip flutuante (M10): Rectangle simples ACIMA do botão. NÃO ocupa espaço no layout (x/y
+    // próprios, fora do fluxo) e NÃO captura ponteiro (sem TouchArea) → não pisca ao mover o mouse
+    // (o PopupWindow piscava por capturar o ponteiro). A aba ativa não usa (já tem label inline).
+    if touch.has-hover && !root.active : Rectangle {
+        x: 0;
+        y: -27px;
+        width: tiplabel.preferred-width + 16px;
+        height: 22px;
+        background: Theme.bg-elevated;
+        border-radius: 5px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-color: #000000a0;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 2px;
+        tiplabel := Text {
+            x: 8px;
+            height: 100%;
+            vertical-alignment: center;
+            text: root.tip;
+            color: Theme.text-hi;
+            font-size: 11px;
+        }
+    }
+}
+
 // Chrome do M2/M4/M7 repaginado no M9: barra de abas + toolbar (omnibox) + favoritos + área web.
 // O `.slint` apenas DECODIFICA cada evento para primitivos e chama um callback; a tradução
 // primitivo -> `InputEvent` do Servo mora no Rust (`input.rs`). Coordenadas: declarar os params como
@@ -277,6 +338,9 @@ export component MainWindow inherits Window {
     in-out property <bool> devtools-open: false;
     in-out property <int> dev-tab: 0; // 0 = console, 1 = rede
     in-out property <int> dev-net-sel: -1; // linha de rede selecionada (detalhe)
+    // M10: dock do DevTools (split screen). devtools-size = ALTURA (base) ou LARGURA (direita) do dock.
+    in-out property <length> devtools-size: 300px;
+    in-out property <bool> dock-right: false; // false = base (split horizontal), true = direita (vertical)
 
     // Chrome -> Rust.
     callback load-url(string);
@@ -555,11 +619,21 @@ export component MainWindow inherits Window {
 
         // Area web: a Image exibe o frame do Servo; a TouchArea captura pointer/scroll e o
         // FocusScope captura teclado. `web-resized` dispara quando o layout muda o tamanho.
-        web := Rectangle {
+        // Área de conteúdo (M10): contém a PÁGINA (`web`) + o dock do DevTools + o divisor, posicionados
+        // MANUALMENTE p/ o dock encaixar na BASE ou na DIREITA (toggle `dock-right`) e a página ENCOLHER.
+        // `web` mantém `changed width/height => web-resized` → encolher dispara o reflow do Servo. As
+        // overlays (find/menu/ctx/histórico) são filhas de `web` → seguem o tamanho dela.
+        content := Rectangle {
             vertical-stretch: 1;
-            background: Theme.bg-surface-2;
-            changed width => { root.web-resized(self.width, self.height); }
-            changed height => { root.web-resized(self.width, self.height); }
+            background: Theme.bg-base;
+            web := Rectangle {
+                x: 0;
+                y: 0;
+                width: root.devtools-open && root.dock-right ? content.width - root.devtools-size - 6px : content.width;
+                height: root.devtools-open && !root.dock-right ? content.height - root.devtools-size - 6px : content.height;
+                background: Theme.bg-surface-2;
+                changed width => { root.web-resized(self.width, self.height); }
+                changed height => { root.web-resized(self.width, self.height); }
 
             Image {
                 width: 100%;
@@ -700,169 +774,8 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Painel de devtools (M7, ADR-0010): overlay sobre a área web. Aba Console (console.log ao
-            // vivo + REPL de eval, in-process) e aba Rede (req+resp do cliente RDP, com detalhe de
-            // headers/payload). Os models e o status vêm do Rust (setup_devtools).
-            if root.devtools-open : Rectangle {
-                width: 100%;
-                height: 100%;
-                background: Theme.bg-base;
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "DevTools";
-                            color: Theme.text-hi;
-                            font-size: 18px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: root.dev-status;
-                            color: Theme.text-mid;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        TextBtn {
-                            label: "Console";
-                            active: root.dev-tab == 0;
-                            clicked => { root.dev-tab = 0; }
-                        }
-                        TextBtn {
-                            label: "Rede";
-                            active: root.dev-tab == 1;
-                            clicked => { root.dev-tab = 1; }
-                        }
-                        TextBtn {
-                            label: "Limpar";
-                            clicked => { root.clear-devtools(); }
-                        }
-                        TextBtn {
-                            label: "Fechar";
-                            clicked => { root.devtools-open = false; }
-                        }
-                    }
-
-                    // Aba CONSOLE: lista de mensagens + REPL de eval.
-                    if root.dev-tab == 0 : VerticalLayout {
-                        spacing: 8px;
-                        ListView {
-                            for c in root.dev-console : HorizontalLayout {
-                                height: 22px;
-                                padding-left: 8px;
-                                spacing: 8px;
-                                Text {
-                                    text: c.level;
-                                    width: 58px;
-                                    vertical-alignment: center;
-                                    color: c.level == "error" ? Theme.danger
-                                        : c.level == "warn" ? #ffd47a
-                                        : c.level == "result" ? Theme.ok
-                                        : c.level == "eval" ? #9ab8ff
-                                        : Theme.text-mid;
-                                }
-                                Text {
-                                    text: c.text;
-                                    color: Theme.text-hi;
-                                    overflow: elide;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                        evalfield := SearchField {
-                            placeholder: "Avaliar JavaScript e teclar Enter (ex.: document.title)";
-                            accepted(t) => {
-                                root.dev-eval(t);
-                                evalfield.text = "";
-                            }
-                        }
-                    }
-
-                    // Aba REDE: lista de requisições + detalhe (headers/payload) da selecionada.
-                    if root.dev-tab == 1 : VerticalLayout {
-                        spacing: 8px;
-                        ListView {
-                            for n[idx] in root.dev-net : Rectangle {
-                                height: 26px;
-                                border-radius: Theme.radius-btn;
-                                background: ntouch.has-hover || root.dev-net-sel == idx ? Theme.bg-elevated : transparent;
-                                ntouch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.dev-net-sel = idx; }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    spacing: 10px;
-                                    Text {
-                                        text: n.method;
-                                        width: 48px;
-                                        color: #9ab8ff;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: n.status == "" ? "…" : n.status;
-                                        width: 80px;
-                                        color: Theme.ok;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: n.url;
-                                        color: Theme.text-hi;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                        if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : ScrollView {
-                            height: 40%;
-                            VerticalLayout {
-                                padding: 8px;
-                                spacing: 4px;
-                                alignment: start;
-                                Text {
-                                    text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "Status: " + root.dev-net[root.dev-net-sel].status + "    MIME: " + root.dev-net[root.dev-net-sel].mime;
-                                    color: Theme.text-hi;
-                                }
-                                Text {
-                                    text: "— Request headers —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].req-headers;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "— Response headers —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].resp-headers;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "— Body —";
-                                    color: Theme.text-mid;
-                                }
-                                Text {
-                                    text: root.dev-net[root.dev-net-sel].body;
-                                    color: Theme.text-hi;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // Painel de DevTools (M10): MOVIDO p/ fora de `web` — virou um DOCK (split) em `content`,
+            // depois de `web` (ver abaixo). Dentro de `web` ficam só as overlays da página.
 
             // Find bar (M9): barra de busca na página, ancorada no topo-direito. Abre por Ctrl+F ou
             // pelo menu ⋯; o TextInput foca ao aparecer (`init`). Injeção de JS no Rust (setup_find).
@@ -1108,6 +1021,208 @@ export component MainWindow inherits Window {
                                     glyph-color: Theme.text-hi;
                                     hover-bg: Theme.bg-surface;
                                     clicked => { root.zoom-in(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+            // Divisor arrastável (M10): acumulador `grab` no press + `devtools-size += grab - mouse` por
+            // `moved` → o divisor segue o ponteiro sem feedback (1 frame de lag), sem depender de absolute-position.
+            if root.devtools-open : Rectangle {
+                x: root.dock-right ? content.width - root.devtools-size - 6px : 0;
+                y: root.dock-right ? 0 : content.height - root.devtools-size - 6px;
+                width: root.dock-right ? 6px : content.width;
+                height: root.dock-right ? content.height : 6px;
+                background: dragta.has-hover || dragta.pressed ? Theme.accent : Theme.border;
+                animate background { duration: 90ms; }
+                dragta := TouchArea {
+                    mouse-cursor: root.dock-right ? ew-resize : ns-resize;
+                    property <length> grab;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            self.grab = root.dock-right ? self.mouse-x : self.mouse-y;
+                        }
+                    }
+                    moved => {
+                        if (root.dock-right) {
+                            root.devtools-size = clamp(root.devtools-size + (self.grab - self.mouse-x), 300px, content.width - 360px);
+                        } else {
+                            root.devtools-size = clamp(root.devtools-size + (self.grab - self.mouse-y), 160px, content.height - 160px);
+                        }
+                    }
+                }
+            }
+            // Dock do DevTools (M10): painel posicionado na BASE (full-width embaixo) ou na DIREITA
+            // (full-height à direita). Conteúdo = M7 (console/eval + rede), reusando models/callbacks.
+            if root.devtools-open : Rectangle {
+                x: root.dock-right ? content.width - root.devtools-size : 0;
+                y: root.dock-right ? 0 : content.height - root.devtools-size;
+                width: root.dock-right ? root.devtools-size : content.width;
+                height: root.dock-right ? content.height : root.devtools-size;
+                background: Theme.bg-base;
+                border-color: Theme.border;
+                border-width: 1px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+                    // Toolbar do DevTools (M10): barra de ÍCONES compactos que revelam o texto no hover
+                    // (e mostram o label quando é a aba ativa) — cabe no dock estreito (à direita).
+                    HorizontalLayout {
+                        spacing: 4px;
+                        DevToolBtn {
+                            glyph: "❯";
+                            tip: "Console";
+                            active: root.dev-tab == 0;
+                            clicked => { root.dev-tab = 0; }
+                        }
+                        DevToolBtn {
+                            glyph: "⇅";
+                            tip: "Rede";
+                            active: root.dev-tab == 1;
+                            clicked => { root.dev-tab = 1; }
+                        }
+                        Text {
+                            text: root.dev-status;
+                            color: Theme.text-lo;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        DevToolBtn {
+                            glyph: "⌦";
+                            tip: "Limpar";
+                            clicked => { root.clear-devtools(); }
+                        }
+                        DevToolBtn {
+                            glyph: "⊟";
+                            tip: root.dock-right ? "Dock na base" : "Dock à direita";
+                            clicked => {
+                                root.dock-right = !root.dock-right;
+                                root.devtools-size = root.dock-right ? content.width / 2 : content.height / 2;
+                            }
+                        }
+                        DevToolBtn {
+                            glyph: "✕";
+                            tip: "Fechar";
+                            clicked => { root.devtools-open = false; }
+                        }
+                    }
+
+                    // Aba CONSOLE: lista de mensagens + REPL de eval.
+                    if root.dev-tab == 0 : VerticalLayout {
+                        spacing: 8px;
+                        ListView {
+                            for c in root.dev-console : HorizontalLayout {
+                                height: 22px;
+                                padding-left: 8px;
+                                spacing: 8px;
+                                Text {
+                                    text: c.level;
+                                    width: 58px;
+                                    vertical-alignment: center;
+                                    color: c.level == "error" ? Theme.danger
+                                        : c.level == "warn" ? #ffd47a
+                                        : c.level == "result" ? Theme.ok
+                                        : c.level == "eval" ? #9ab8ff
+                                        : Theme.text-mid;
+                                }
+                                Text {
+                                    text: c.text;
+                                    color: Theme.text-hi;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        evalfield := SearchField {
+                            placeholder: "Avaliar JavaScript e teclar Enter (ex.: document.title)";
+                            accepted(t) => {
+                                root.dev-eval(t);
+                                evalfield.text = "";
+                            }
+                        }
+                    }
+
+                    // Aba REDE: lista de requisições + detalhe (headers/payload) da selecionada.
+                    if root.dev-tab == 1 : VerticalLayout {
+                        spacing: 8px;
+                        ListView {
+                            for n[idx] in root.dev-net : Rectangle {
+                                height: 26px;
+                                border-radius: Theme.radius-btn;
+                                background: ntouch.has-hover || root.dev-net-sel == idx ? Theme.bg-elevated : transparent;
+                                ntouch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.dev-net-sel = idx; }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: n.method;
+                                        width: 48px;
+                                        color: #9ab8ff;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.status == "" ? "…" : n.status;
+                                        width: 80px;
+                                        color: Theme.ok;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: n.url;
+                                        color: Theme.text-hi;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : ScrollView {
+                            height: 40%;
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                alignment: start;
+                                Text {
+                                    text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
+                                    color: Theme.text-hi;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Status: " + root.dev-net[root.dev-net-sel].status + "    MIME: " + root.dev-net[root.dev-net-sel].mime;
+                                    color: Theme.text-hi;
+                                }
+                                Text {
+                                    text: "— Request headers —";
+                                    color: Theme.text-mid;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].req-headers;
+                                    color: Theme.text-hi;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "— Response headers —";
+                                    color: Theme.text-mid;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].resp-headers;
+                                    color: Theme.text-hi;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "— Body —";
+                                    color: Theme.text-mid;
+                                }
+                                Text {
+                                    text: root.dev-net[root.dev-net-sel].body;
+                                    color: Theme.text-hi;
+                                    wrap: word-wrap;
                                 }
                             }
                         }
