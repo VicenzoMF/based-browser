@@ -2644,3 +2644,45 @@ fn save_session_on_exit(manager: &Rc<RefCell<Option<TabManager>>>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{find_script, parse_find_result, zoom_percent, JSValue};
+
+    #[test]
+    fn zoom_percent_rounds_to_inteiro() {
+        // M9 (T6): fator de zoom → percentual inteiro p/ exibição (passo aditivo de 10%).
+        assert_eq!(zoom_percent(1.0), 100);
+        assert_eq!(zoom_percent(1.1), 110);
+        assert_eq!(zoom_percent(0.3), 30);
+        assert_eq!(zoom_percent(2.5), 250);
+    }
+
+    #[test]
+    fn parse_find_result_le_idx_e_count() {
+        // M9 (T7): o script de find devolve "idx,count"; formato inesperado → None.
+        assert_eq!(
+            parse_find_result(&JSValue::String("3,12".to_string())),
+            Some((3, 12))
+        );
+        assert_eq!(
+            parse_find_result(&JSValue::String("0,0".to_string())),
+            Some((0, 0))
+        );
+        assert_eq!(
+            parse_find_result(&JSValue::String("nada".to_string())),
+            None
+        );
+        assert_eq!(parse_find_result(&JSValue::Undefined), None);
+    }
+
+    #[test]
+    fn find_script_escapa_query_e_seta_sentido() {
+        // M9 (T7): a query é escapada via JSON (literal JS seguro) e o sentido é forward/backward.
+        let fwd = find_script("a\"b", true);
+        assert!(fwd.contains("\"a\\\"b\"")); // "a\"b" como literal JS
+        assert!(fwd.trim_end().ends_with(", true)"));
+        let back = find_script("x", false);
+        assert!(back.trim_end().ends_with(", false)"));
+    }
+}
