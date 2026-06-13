@@ -195,6 +195,9 @@ struct DevtoolsState {
     /// M10: filtro por TIPO de recurso (chips do painel — índice de [`net_kind`]; 0 = todos). Separa
     /// as requests "de verdade" (fetch/XHR) do ruído (imagens, fontes, css...).
     kind_filter: Cell<i32>,
+    /// M10: snapshot da lista FILTRADA do último rebuild — usado por `on_select_net` (o clique manda o
+    /// índice na lista filtrada) p/ montar as tabelas de headers do detalhe.
+    filtered: RefCell<Vec<NetRecord>>,
     /// Lado-emissor do canal cliente RDP → UI. O delegate o CLONA para a thread do cliente.
     net_tx: Sender<NetRecord>,
     /// Lado-receptor (drenado pelo timer de devtools). `Option` p/ ser `take`-able caso necessário.
@@ -213,6 +216,7 @@ impl DevtoolsState {
             dirty: Cell::new(false),
             filter: RefCell::new(String::new()),
             kind_filter: Cell::new(0),
+            filtered: RefCell::new(Vec::new()),
             net_tx,
             net_rx: RefCell::new(Some(net_rx)),
             client_spawned: Cell::new(false),
@@ -2319,8 +2323,12 @@ fn setup_devtools(
     let devtools = sink.devtools.clone();
     let console_model: Rc<VecModel<DevConsoleLine>> = Rc::new(VecModel::default());
     let net_model: Rc<VecModel<DevNetRow>> = Rc::new(VecModel::default());
+    let sel_req_model: Rc<VecModel<DevHeader>> = Rc::new(VecModel::default());
+    let sel_resp_model: Rc<VecModel<DevHeader>> = Rc::new(VecModel::default());
     app.set_dev_console(console_model.clone().into());
     app.set_dev_net(net_model.clone().into());
+    app.set_sel_req_headers(sel_req_model.clone().into());
+    app.set_sel_resp_headers(sel_resp_model.clone().into());
 
     // M10 (T5): restaura tamanho/orientação do dock do DevTools (default da UI se não houver salvo).
     if let Some(dock) = persist::load_dock() {
@@ -2355,6 +2363,13 @@ fn setup_devtools(
         dt.kind_filter.set(kind);
         dt.dirty.set(true);
     });
+    // M10: clique numa request → monta as tabelas de headers (request/response) do detalhe.
+    let dt = devtools.clone();
+    let req_hdrs = sel_req_model.clone();
+    let resp_hdrs = sel_resp_model.clone();
+    app.on_select_net(move |idx| {
+        update_sel_headers(&dt.filtered.borrow(), idx, &req_hdrs, &resp_hdrs);
+    });
     // M10 (T5): persiste o dock — chamado pelo Slint no FIM do arrasto do divisor e no toggle base/direita.
     let weak_persist = app.as_weak();
     app.on_persist_dock(move || {
@@ -2372,7 +2387,14 @@ fn setup_devtools(
         drain_devtools_net(&devtools);
         if devtools.dirty.replace(false) {
             if let Some(app) = weak.upgrade() {
-                rebuild_dev_models(&app, &devtools, &console_model, &net_model);
+                rebuild_dev_models(
+                    &app,
+                    &devtools,
+                    &console_model,
+                    &net_model,
+                    &sel_req_model,
+                    &sel_resp_model,
+                );
             }
         }
     });
@@ -2386,6 +2408,8 @@ fn rebuild_dev_models(
     devtools: &Rc<DevtoolsState>,
     console_model: &VecModel<DevConsoleLine>,
     net_model: &VecModel<DevNetRow>,
+    sel_req_model: &VecModel<DevHeader>,
+    sel_resp_model: &VecModel<DevHeader>,
 ) {
     let console: Vec<DevConsoleLine> = devtools
         .console
@@ -2401,7 +2425,7 @@ fn rebuild_dev_models(
     let net = devtools.net.borrow();
     let filter = devtools.filter.borrow().to_lowercase();
     let kind_wanted = devtools.kind_filter.get();
-    let rows: Vec<DevNetRow> = net
+    let filtered_recs: Vec<NetRecord> = net
         .iter()
         .filter(|r| {
             // Filtro por TIPO (chips): 0 = todos; senão o kind do recurso tem que casar.
@@ -2417,6 +2441,10 @@ fn rebuild_dev_models(
                 || r.status.to_lowercase().contains(&filter)
                 || name.contains(&filter)
         })
+        .cloned()
+        .collect();
+    let rows: Vec<DevNetRow> = filtered_recs
+        .iter()
         .map(|r| {
             let kind = net_kind(&r.cause, r.is_xhr);
             DevNetRow {
@@ -2438,6 +2466,15 @@ fn rebuild_dev_models(
         })
         .collect();
     net_model.set_vec(rows);
+    // M10: atualiza as tabelas de headers da request SELECIONADA (sincroniza com novos dados) e guarda
+    // a lista filtrada p/ o `on_select_net` (o clique manda o índice nessa lista).
+    update_sel_headers(
+        &filtered_recs,
+        app.get_dev_net_sel(),
+        sel_req_model,
+        sel_resp_model,
+    );
+    *devtools.filtered.borrow_mut() = filtered_recs;
 
     let status = match devtools.port.get() {
         Some(port) => format!("servidor 127.0.0.1:{port} · {} requisição(ões)", net.len()),
@@ -2455,6 +2492,31 @@ fn join_headers(headers: &[(String, String)]) -> String {
         .map(|(k, v)| format!("{k}: {v}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// M10: monta as tabelas de headers (request/response) da request selecionada (`idx` na lista FILTRADA)
+/// para os models do detalhe (tabela nome | valor). Vazio se `idx` inválido.
+fn update_sel_headers(
+    filtered: &[NetRecord],
+    idx: i32,
+    sel_req_model: &VecModel<DevHeader>,
+    sel_resp_model: &VecModel<DevHeader>,
+) {
+    let to_rows = |hs: &[(String, String)]| -> Vec<DevHeader> {
+        hs.iter()
+            .map(|(name, value)| DevHeader {
+                name: name.as_str().into(),
+                value: value.as_str().into(),
+            })
+            .collect()
+    };
+    if let Some(rec) = usize::try_from(idx).ok().and_then(|i| filtered.get(i)) {
+        sel_req_model.set_vec(to_rows(&rec.req_headers));
+        sel_resp_model.set_vec(to_rows(&rec.resp_headers));
+    } else {
+        sel_req_model.set_vec(Vec::new());
+        sel_resp_model.set_vec(Vec::new());
+    }
 }
 
 /// M10: nome curto de um recurso de rede — último segmento do path (arquivo); senão host; senão a URL.

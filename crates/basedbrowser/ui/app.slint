@@ -61,6 +61,12 @@ export struct DevNetRow {
     body: string,
 }
 
+// M10: um header HTTP (nome/valor) p/ a TABELA de headers no detalhe de rede (estilo DevTools).
+export struct DevHeader {
+    name: string,
+    value: string,
+}
+
 // M9: tokens do tema "dark refinado" (fonte da verdade compartilhada com o mock do Pencil).
 global Theme {
     out property <color> bg-base: #0f0f14;
@@ -377,7 +383,11 @@ export component MainWindow inherits Window {
     in-out property <bool> devtools-open: false;
     in-out property <int> dev-tab: 0; // 0 = console, 1 = rede
     in-out property <int> dev-net-sel: -1; // linha de rede selecionada (detalhe)
-    in-out property <int> dev-net-detail-tab: 1; // 0 = Request, 1 = Response (no detalhe)
+    in-out property <int> dev-net-detail-tab: 0; // 0 = Headers, 1 = Payload, 2 = Resposta (no detalhe)
+    // M10: tabelas de headers (request/response) da requisição SELECIONADA — montadas no Rust no clique
+    // (select-net) e no rebuild. Top-level (o Slint não "splita" a string de headers).
+    in property <[DevHeader]> sel-req-headers;
+    in property <[DevHeader]> sel-resp-headers;
     // M10 (ADR-0014): porta do servidor RDP (0 = desligado) p/ a afford. "Debugger ↗" (step-debug Firefox).
     in property <int> dev-rdp-port: 0;
     in-out property <bool> debug-info-open: false;
@@ -418,6 +428,8 @@ export component MainWindow inherits Window {
     // M10: filtro por TIPO de recurso na rede (chips; índice de net_kind no Rust; 0 = todos).
     in-out property <int> dev-net-kind: 0;
     callback filter-net-kind(int);
+    // M10: seleção de uma request → o Rust monta as tabelas de headers (sel-req/resp-headers).
+    callback select-net(int);
     // M10 (T5): persiste tamanho/orientação do dock (chamado no fim do arrasto do divisor e no toggle).
     callback persist-dock();
     // M9: zoom de página (Ctrl +/−/0 e o menu ⋯).
@@ -1318,7 +1330,10 @@ export component MainWindow inherits Window {
                                 background: ntouch.has-hover || root.dev-net-sel == idx ? Theme.bg-elevated : transparent;
                                 ntouch := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.dev-net-sel = idx; }
+                                    clicked => {
+                                        root.dev-net-sel = idx;
+                                        root.select-net(idx);
+                                    }
                                 }
                                 HorizontalLayout {
                                     padding-left: 8px;
@@ -1374,11 +1389,12 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
-                        // Detalhe da requisição selecionada: URL completa + sub-abas Request/Response.
+                        // Detalhe (M10): método + URL + status; abas Headers/Payload/Resposta (estilo
+                        // DevTools). Headers como TABELA (nome|valor); payload/resposta em code block.
                         if root.dev-net-sel >= 0 && root.dev-net-sel < root.dev-net.length : VerticalLayout {
                             spacing: 6px;
                             Text {
-                                text: "▸ " + root.dev-net[root.dev-net-sel].method + " " + root.dev-net[root.dev-net-sel].url;
+                                text: "▸ " + root.dev-net[root.dev-net-sel].method + "  " + root.dev-net[root.dev-net-sel].url;
                                 font-family: "monospace";
                                 font-size: 12px;
                                 color: Theme.text-hi;
@@ -1400,76 +1416,113 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
                                 alignment: start;
                                 TextBtn {
-                                    label: "Request";
+                                    label: "Headers";
                                     active: root.dev-net-detail-tab == 0;
                                     clicked => { root.dev-net-detail-tab = 0; }
                                 }
                                 TextBtn {
-                                    label: "Response";
+                                    label: "Payload";
                                     active: root.dev-net-detail-tab == 1;
                                     clicked => { root.dev-net-detail-tab = 1; }
+                                }
+                                TextBtn {
+                                    label: "Resposta";
+                                    active: root.dev-net-detail-tab == 2;
+                                    clicked => { root.dev-net-detail-tab = 2; }
                                 }
                             }
                             ScrollView {
                                 height: 40%;
                                 VerticalLayout {
-                                    padding: 8px;
-                                    spacing: 4px;
+                                    padding: 4px;
+                                    spacing: 6px;
                                     alignment: start;
+                                    // HEADERS: tabela request + response (nome à esquerda, valor à direita).
                                     if root.dev-net-detail-tab == 0 : VerticalLayout {
-                                        spacing: 4px;
+                                        spacing: 3px;
                                         alignment: start;
                                         Text {
-                                            text: "— Request headers —";
-                                            font-size: 12px;
-                                            color: Theme.text-mid;
+                                            text: "REQUEST";
+                                            font-size: 10px;
+                                            color: Theme.text-lo;
                                         }
-                                        Text {
-                                            text: root.dev-net[root.dev-net-sel].req-headers;
-                                            font-family: "monospace";
-                                            font-size: 12px;
-                                            color: Theme.text-hi;
-                                            wrap: word-wrap;
+                                        for h in root.sel-req-headers : HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: h.name;
+                                                width: 150px;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: Theme.text-mid;
+                                                wrap: word-wrap;
+                                            }
+                                            Text {
+                                                text: h.value;
+                                                horizontal-stretch: 1;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: Theme.text-hi;
+                                                wrap: word-wrap;
+                                            }
                                         }
+                                        Rectangle { height: 6px; }
                                         Text {
-                                            text: "— Payload —";
-                                            font-size: 12px;
-                                            color: Theme.text-mid;
+                                            text: "RESPONSE";
+                                            font-size: 10px;
+                                            color: Theme.text-lo;
                                         }
-                                        Text {
-                                            text: root.dev-net[root.dev-net-sel].req-body == "" ? "(sem payload)" : root.dev-net[root.dev-net-sel].req-body;
-                                            font-family: "monospace";
-                                            font-size: 12px;
-                                            color: root.dev-net[root.dev-net-sel].req-body == "" ? Theme.text-lo : Theme.text-hi;
-                                            wrap: word-wrap;
+                                        for h in root.sel-resp-headers : HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: h.name;
+                                                width: 150px;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: Theme.text-mid;
+                                                wrap: word-wrap;
+                                            }
+                                            Text {
+                                                text: h.value;
+                                                horizontal-stretch: 1;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: Theme.text-hi;
+                                                wrap: word-wrap;
+                                            }
                                         }
                                     }
-                                    if root.dev-net-detail-tab == 1 : VerticalLayout {
-                                        spacing: 4px;
-                                        alignment: start;
-                                        Text {
-                                            text: "— Response headers —";
-                                            font-size: 12px;
-                                            color: Theme.text-mid;
+                                    // PAYLOAD: corpo da request num code block.
+                                    if root.dev-net-detail-tab == 1 : Rectangle {
+                                        background: Theme.bg-base;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            Text {
+                                                text: root.dev-net[root.dev-net-sel].req-body == "" ? "Sem payload" : root.dev-net[root.dev-net-sel].req-body;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: root.dev-net[root.dev-net-sel].req-body == "" ? Theme.text-lo : Theme.text-hi;
+                                                wrap: word-wrap;
+                                            }
                                         }
-                                        Text {
-                                            text: root.dev-net[root.dev-net-sel].resp-headers;
-                                            font-family: "monospace";
-                                            font-size: 12px;
-                                            color: Theme.text-hi;
-                                            wrap: word-wrap;
-                                        }
-                                        Text {
-                                            text: "— Body —";
-                                            font-size: 12px;
-                                            color: Theme.text-mid;
-                                        }
-                                        Text {
-                                            text: root.dev-net[root.dev-net-sel].body;
-                                            font-family: "monospace";
-                                            font-size: 12px;
-                                            color: Theme.text-hi;
-                                            wrap: word-wrap;
+                                    }
+                                    // RESPOSTA: corpo da resposta num code block.
+                                    if root.dev-net-detail-tab == 2 : Rectangle {
+                                        background: Theme.bg-base;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            Text {
+                                                text: root.dev-net[root.dev-net-sel].body == "" ? "Sem corpo" : root.dev-net[root.dev-net-sel].body;
+                                                font-family: "monospace";
+                                                font-size: 12px;
+                                                color: root.dev-net[root.dev-net-sel].body == "" ? Theme.text-lo : Theme.text-hi;
+                                                wrap: word-wrap;
+                                            }
                                         }
                                     }
                                 }
